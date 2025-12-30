@@ -1,4 +1,4 @@
-# AI Agent Platform
+# Agent Skill Platform
 
 A full-stack AI Agent Platform for managing and interacting with customizable AI agents powered by Claude Agent SDK.
 
