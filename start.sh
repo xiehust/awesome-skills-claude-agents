@@ -56,7 +56,7 @@ echo ""
 echo "🔧 Starting backend (FastAPI)..."
 cd backend
 source .venv/bin/activate
-nohup python main.py > ../logs/backend.log 2>&1 &
+nohup uv run main.py > ../logs/backend.log 2>&1 &
 BACKEND_PID=$!
 echo $BACKEND_PID > ../.pids/backend.pid
 cd ..
