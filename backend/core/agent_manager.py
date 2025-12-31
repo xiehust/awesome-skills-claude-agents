@@ -10,6 +10,7 @@ from claude_agent_sdk import (
     ClaudeSDKClient,
     ClaudeAgentOptions,
     AssistantMessage,
+    SystemMessage,
     TextBlock,
     ToolUseBlock,
     ToolResultBlock,
@@ -264,13 +265,14 @@ class AgentManager:
         Uses ClaudeSDKClient for multi-turn conversations with Claude.
         Claude Code has built-in support for Skills via the Skill tool.
 
-        For multi-turn conversations, pass the same session_id to resume
-        the conversation from where it left off.
+        For multi-turn conversations, pass the session_id from the SDK's
+        init message to resume the conversation from where it left off.
+
+        The session_id is provided by the SDK in the first SystemMessage
+        with subtype='init'. This ID must be captured and used for resumption.
         """
         # Check if this is a new session or resuming an existing one
-        is_new_session = session_id is None
-        if not session_id:
-            session_id = str(uuid4())
+        is_resuming = session_id is not None
 
         # Get agent config
         agent_config = await db.agents.get(agent_id)
@@ -281,46 +283,50 @@ class AgentManager:
             }
             return
 
-        logger.info(f"Running conversation with agent {agent_id}, session {session_id}, is_new={is_new_session}")
+        logger.info(f"Running conversation with agent {agent_id}, session {session_id}, is_resuming={is_resuming}")
         logger.info(f"Agent config: {agent_config}")
 
-        # Send session_start event immediately so frontend can track session_id for stopping
-        yield {
-            "type": "session_start",
-            "sessionId": session_id,
-        }
+        # For resumed sessions, we can send session_start immediately
+        # For new sessions, we'll send it after capturing SDK session_id
+        if is_resuming:
+            yield {
+                "type": "session_start",
+                "sessionId": session_id,
+            }
+            # Store/update session for resumed conversations
+            title = user_message[:50] + "..." if len(user_message) > 50 else user_message
+            await session_manager.store_session(session_id, agent_id, title)
 
-        # Store/update session
-        title = user_message[:50] + "..." if len(user_message) > 50 else user_message
-        await session_manager.store_session(session_id, agent_id, title)
-
-        # Save user message to database
-        await self._save_message(
-            session_id=session_id,
-            role="user",
-            content=[{"type": "text", "text": user_message}]
-        )
+            # Save user message to database for resumed sessions
+            await self._save_message(
+                session_id=session_id,
+                role="user",
+                content=[{"type": "text", "text": user_message}]
+            )
 
         # Configure Claude environment variables
         _configure_claude_environment()
 
         # Build options - use resume parameter if continuing an existing session
-        resume_id = session_id if not is_new_session else None
-        options = await self._build_options(agent_config, enable_skills, enable_mcp, resume_id)
-        logger.info(f"Built options - allowed_tools: {options.allowed_tools}, permission_mode: {options.permission_mode}, resume: {resume_id}")
+        options = await self._build_options(agent_config, enable_skills, enable_mcp, session_id if is_resuming else None)
+        logger.info(f"Built options - allowed_tools: {options.allowed_tools}, permission_mode: {options.permission_mode}, resume: {session_id if is_resuming else None}")
         logger.info(f"MCP servers: {options.mcp_servers}")
         logger.info(f"Working directory: {options.cwd}")
 
         # Collect assistant response content for saving
         assistant_content = []
         assistant_model = None
+        # Track the actual SDK session_id (captured from init message)
+        sdk_session_id = session_id  # Will be updated for new sessions
 
         try:
             logger.info(f"Creating ClaudeSDKClient...")
             async with ClaudeSDKClient(options=options) as client:
-                # Store client for potential interruption
-                self._clients[session_id] = client
-                logger.info(f"ClaudeSDKClient created and stored for session {session_id}")
+                # For resumed sessions, store client immediately
+                # For new sessions, we'll store after getting SDK session_id
+                if is_resuming:
+                    self._clients[session_id] = client
+                logger.info(f"ClaudeSDKClient created, is_resuming={is_resuming}")
 
                 try:
                     logger.info(f"Sending query: {user_message[:100]}...")
@@ -333,7 +339,35 @@ class AgentManager:
                     async for message in client.receive_response():
                         message_count += 1
                         logger.debug(f"Received message {message_count}: {type(message).__name__}")
-                        formatted = self._format_message(message, agent_config, session_id)
+
+                        # Capture session_id from SDK's init message (for new sessions)
+                        if isinstance(message, SystemMessage) and message.subtype == 'init':
+                            sdk_session_id = message.data.get('session_id')
+                            logger.info(f"Captured SDK session_id from init: {sdk_session_id}")
+
+                            # For new sessions, now we can send session_start and store session
+                            if not is_resuming:
+                                # Store client with SDK session_id
+                                self._clients[sdk_session_id] = client
+
+                                yield {
+                                    "type": "session_start",
+                                    "sessionId": sdk_session_id,
+                                }
+
+                                # Store session with SDK session_id
+                                title = user_message[:50] + "..." if len(user_message) > 50 else user_message
+                                await session_manager.store_session(sdk_session_id, agent_id, title)
+
+                                # Save user message to database with SDK session_id
+                                await self._save_message(
+                                    session_id=sdk_session_id,
+                                    role="user",
+                                    content=[{"type": "text", "text": user_message}]
+                                )
+                            continue  # Don't format SystemMessage for output
+
+                        formatted = self._format_message(message, agent_config, sdk_session_id)
                         if formatted:
                             logger.debug(f"Formatted message type: {formatted.get('type')}")
 
@@ -350,7 +384,7 @@ class AgentManager:
                                 # Save assistant message before returning
                                 if assistant_content:
                                     await self._save_message(
-                                        session_id=session_id,
+                                        session_id=sdk_session_id,
                                         role="assistant",
                                         content=assistant_content,
                                         model=assistant_model
@@ -364,7 +398,7 @@ class AgentManager:
                             # Save assistant message
                             if assistant_content:
                                 await self._save_message(
-                                    session_id=session_id,
+                                    session_id=sdk_session_id,
                                     role="assistant",
                                     content=assistant_content,
                                     model=assistant_model
@@ -372,15 +406,16 @@ class AgentManager:
 
                             yield {
                                 "type": "result",
-                                "session_id": session_id,
+                                "session_id": sdk_session_id,
                                 "duration_ms": getattr(message, 'duration_ms', 0),
                                 "total_cost_usd": getattr(message, 'total_cost_usd', None),
                                 "num_turns": getattr(message, 'num_turns', 1),
                             }
                 finally:
                     # Remove client from tracking when done
-                    self._clients.pop(session_id, None)
-                    logger.info(f"Client removed from tracking for session {session_id}")
+                    if sdk_session_id:
+                        self._clients.pop(sdk_session_id, None)
+                    logger.info(f"Client removed from tracking for session {sdk_session_id}")
 
         except Exception as e:
             import traceback
@@ -518,6 +553,12 @@ class AgentManager:
                 async for message in client.receive_response():
                     message_count += 1
                     logger.debug(f"Received message {message_count}: {type(message).__name__}")
+
+                    # Skip SystemMessage (init message)
+                    if isinstance(message, SystemMessage):
+                        logger.debug(f"Skipping SystemMessage with subtype: {message.subtype}")
+                        continue
+
                     formatted = self._format_message(message, agent_config, session_id)
                     if formatted:
                         logger.debug(f"Formatted message type: {formatted.get('type')}")
@@ -641,9 +682,8 @@ class AgentManager:
             Formatted messages from the agent
         """
         # Check if resuming or new session
-        is_new_session = session_id is None
-        if not session_id:
-            session_id = str(uuid4())
+        # For new sessions, session_id will be captured from SDK's init message
+        is_resuming = session_id is not None
 
         # Build the initial prompt or use the follow-up message
         if user_message:
@@ -688,7 +728,7 @@ Current task: Create a skill named "{skill_name}" that {skill_description}"""
 
         # Create temporary agent config for skill creation
         agent_config = {
-            "name": f"skill-creator-{session_id[:8]}",
+            "name": f"skill-creator-{session_id[:8] if session_id else 'new'}",
             "description": "Temporary agent for skill creation",
             "system_prompt": system_prompt,
             "allowed_tools": ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "Skill"],
@@ -699,33 +739,38 @@ Current task: Create a skill named "{skill_name}" that {skill_description}"""
             "model": model or "claude-sonnet-4-5-20250929",  # Default to Sonnet 4.5
         }
 
-        logger.info(f"Running skill creator conversation for '{skill_name}', session {session_id}, model {agent_config['model']}")
+        logger.info(f"Running skill creator conversation for '{skill_name}', session {session_id}, model {agent_config['model']}, is_resuming={is_resuming}")
 
-        # Send session_start event immediately so frontend can track session_id for stopping
-        yield {
-            "type": "session_start",
-            "sessionId": session_id,
-        }
-
-        # Store session
-        title = f"Creating skill: {skill_name}"
-        await session_manager.store_session(session_id, "skill-creator", title)
+        # For resumed sessions, send session_start immediately
+        # For new sessions, we'll send it after capturing SDK session_id
+        if is_resuming:
+            yield {
+                "type": "session_start",
+                "sessionId": session_id,
+            }
+            # Store session for resumed conversations
+            title = f"Creating skill: {skill_name}"
+            await session_manager.store_session(session_id, "skill-creator", title)
 
         # Configure Claude environment variables
         _configure_claude_environment()
 
         # Build options with resume if continuing
-        resume_id = session_id if not is_new_session else None
-        options = await self._build_options(agent_config, enable_skills=True, enable_mcp=False, resume_session_id=resume_id)
-        logger.info(f"Skill creator options - allowed_tools: {options.allowed_tools}, resume: {resume_id}")
+        options = await self._build_options(agent_config, enable_skills=True, enable_mcp=False, resume_session_id=session_id if is_resuming else None)
+        logger.info(f"Skill creator options - allowed_tools: {options.allowed_tools}, resume: {session_id if is_resuming else None}")
         logger.info(f"Working directory: {options.cwd}")
+
+        # Track the actual SDK session_id
+        sdk_session_id = session_id  # Will be updated for new sessions
 
         try:
             logger.info(f"Creating ClaudeSDKClient for skill creation...")
             async with ClaudeSDKClient(options=options) as client:
-                # Store client for potential interruption
-                self._clients[session_id] = client
-                logger.info(f"ClaudeSDKClient created and stored for session {session_id}")
+                # For resumed sessions, store client immediately
+                # For new sessions, we'll store after getting SDK session_id
+                if is_resuming:
+                    self._clients[session_id] = client
+                logger.info(f"ClaudeSDKClient created, is_resuming={is_resuming}")
 
                 try:
                     logger.info(f"Sending skill creation query...")
@@ -736,7 +781,28 @@ Current task: Create a skill named "{skill_name}" that {skill_description}"""
                     async for message in client.receive_response():
                         message_count += 1
                         logger.debug(f"Received message {message_count}: {type(message).__name__}")
-                        formatted = self._format_message(message, agent_config, session_id)
+
+                        # Capture session_id from SDK's init message (for new sessions)
+                        if isinstance(message, SystemMessage) and message.subtype == 'init':
+                            sdk_session_id = message.data.get('session_id')
+                            logger.info(f"Captured SDK session_id from init: {sdk_session_id}")
+
+                            # For new sessions, now we can send session_start and store session
+                            if not is_resuming:
+                                # Store client with SDK session_id
+                                self._clients[sdk_session_id] = client
+
+                                yield {
+                                    "type": "session_start",
+                                    "sessionId": sdk_session_id,
+                                }
+
+                                # Store session with SDK session_id
+                                title = f"Creating skill: {skill_name}"
+                                await session_manager.store_session(sdk_session_id, "skill-creator", title)
+                            continue  # Don't format SystemMessage for output
+
+                        formatted = self._format_message(message, agent_config, sdk_session_id)
                         if formatted:
                             logger.debug(f"Formatted message type: {formatted.get('type')}")
                             yield formatted
@@ -750,7 +816,7 @@ Current task: Create a skill named "{skill_name}" that {skill_description}"""
                             logger.info(f"Skill creation conversation complete. Total messages: {message_count}")
                             yield {
                                 "type": "result",
-                                "session_id": session_id,
+                                "session_id": sdk_session_id,
                                 "duration_ms": getattr(message, 'duration_ms', 0),
                                 "total_cost_usd": getattr(message, 'total_cost_usd', None),
                                 "num_turns": getattr(message, 'num_turns', 1),
@@ -758,8 +824,9 @@ Current task: Create a skill named "{skill_name}" that {skill_description}"""
                             }
                 finally:
                     # Remove client from tracking when done
-                    self._clients.pop(session_id, None)
-                    logger.info(f"Client removed from tracking for session {session_id}")
+                    if sdk_session_id:
+                        self._clients.pop(sdk_session_id, None)
+                    logger.info(f"Client removed from tracking for session {sdk_session_id}")
 
         except Exception as e:
             import traceback
