@@ -75,10 +75,10 @@ for i in {1..30}; do
     sleep 1
 done
 
-# Start frontend
+# Start frontend (bind to 0.0.0.0 for public access)
 echo "🎨 Starting frontend (Vite)..."
 cd frontend
-nohup npm run dev > ../logs/frontend.log 2>&1 &
+nohup npm run dev -- --host 0.0.0.0 > ../logs/frontend.log 2>&1 &
 FRONTEND_PID=$!
 echo $FRONTEND_PID > ../.pids/frontend.pid
 cd ..
@@ -100,7 +100,7 @@ done
 echo ""
 echo "✨ AI Agent Platform is running!"
 echo ""
-echo "📍 Frontend: http://localhost:5173"
+echo "📍 Frontend: http://localhost:5173 (or http://<your-ip>:5173 for public access)"
 echo "📍 Backend:  http://localhost:8000"
 echo "📍 API Docs: http://localhost:8000/docs"
 echo ""
