@@ -39,7 +39,7 @@ export default function Sidebar() {
             <span className="material-symbols-outlined text-primary">smart_toy</span>
           </div>
           <div>
-            <h1 className="font-semibold text-white">Agent Platform</h1>
+            <h1 className="font-semibold text-white">Agent Skill Platform</h1>
             <p className="text-xs text-muted">Workspace</p>
           </div>
         </div>

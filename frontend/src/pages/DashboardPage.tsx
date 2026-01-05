@@ -104,7 +104,7 @@ export default function DashboardPage() {
     <div className="p-8">
       {/* Header */}
       <div className="mb-8">
-        <h1 className="text-3xl font-bold text-white mb-2">Welcome to Agent Platform</h1>
+        <h1 className="text-3xl font-bold text-white mb-2">Welcome to Agent Skill Platform</h1>
         <p className="text-muted">
           Manage your AI agents, skills, and MCP server connections
         </p>
