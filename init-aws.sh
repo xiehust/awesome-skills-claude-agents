@@ -62,6 +62,37 @@ create_dynamodb_table_if_not_exists() {
     echo "  ✅ Table $TABLE_NAME created successfully"
 }
 
+# Enable TTL on a DynamoDB table
+enable_ttl_on_table() {
+    local TABLE_NAME=$1
+    local TTL_ATTRIBUTE=$2
+    local REGION=${AWS_REGION:-us-west-2}
+
+    # Check current TTL status
+    local TTL_STATUS=$(aws dynamodb describe-time-to-live \
+        --table-name "$TABLE_NAME" \
+        --region "$REGION" \
+        --query 'TimeToLiveDescription.TimeToLiveStatus' \
+        --output text 2>/dev/null)
+
+    if [ "$TTL_STATUS" = "ENABLED" ] || [ "$TTL_STATUS" = "ENABLING" ]; then
+        echo "  ✅ TTL already enabled on $TABLE_NAME"
+        return 0
+    fi
+
+    echo "  ⏰ Enabling TTL on $TABLE_NAME (attribute: $TTL_ATTRIBUTE)..."
+    aws dynamodb update-time-to-live \
+        --table-name "$TABLE_NAME" \
+        --time-to-live-specification "Enabled=true,AttributeName=$TTL_ATTRIBUTE" \
+        --region "$REGION" > /dev/null 2>&1
+
+    if [ $? -eq 0 ]; then
+        echo "  ✅ TTL enabled on $TABLE_NAME (items expire after 7 days)"
+    else
+        echo "  ⚠️  Could not enable TTL on $TABLE_NAME (may require permissions)"
+    fi
+}
+
 # Update S3_BUCKET in .env with account ID
 update_s3_bucket_with_account_id() {
     local ENV_FILE="${SCRIPT_DIR}/backend/.env"
@@ -191,6 +222,12 @@ init_aws_resources() {
 
     if [ -n "$DYNAMODB_MESSAGES_TABLE" ]; then
         create_dynamodb_table_if_not_exists "$DYNAMODB_MESSAGES_TABLE"
+        # Enable TTL on messages table (items expire after 7 days)
+        enable_ttl_on_table "$DYNAMODB_MESSAGES_TABLE" "expires_at"
+    fi
+
+    if [ -n "$DYNAMODB_SKILL_VERSIONS_TABLE" ]; then
+        create_dynamodb_table_if_not_exists "$DYNAMODB_SKILL_VERSIONS_TABLE"
     fi
 
     # Create S3 bucket if it doesn't exist

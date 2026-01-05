@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { SearchBar, Button, Modal, SkeletonTable, ResizableTable, ResizableTableCell, ConfirmDialog, AskUserQuestion, Dropdown, MarkdownRenderer } from '../components/common';
-import type { Skill, SyncResult, StreamEvent, ContentBlock, AskUserQuestion as AskUserQuestionType } from '../types';
+import type { Skill, SyncResult, StreamEvent, ContentBlock, AskUserQuestion as AskUserQuestionType, SkillVersionList } from '../types';
 import { skillsService } from '../services/skills';
 import { chatService } from '../services/chat';
 import { Spinner } from '../components/common';
@@ -22,10 +22,11 @@ function formatDateTime(dateString: string): string {
 // Table column configuration
 const SKILL_COLUMNS = [
   { key: 'name', header: 'Skill Name', initialWidth: 180, minWidth: 120 },
-  { key: 'description', header: 'Description', initialWidth: 250, minWidth: 150 },
-  { key: 's3Location', header: 'S3 Location', initialWidth: 350, minWidth: 200 },
-  { key: 'updatedAt', header: 'Updated', initialWidth: 180, minWidth: 120 },
-  { key: 'actions', header: 'Actions', initialWidth: 100, minWidth: 80, align: 'right' as const },
+  { key: 'description', header: 'Description', initialWidth: 220, minWidth: 150 },
+  { key: 'version', header: 'Version', initialWidth: 120, minWidth: 80 },
+  { key: 's3Location', header: 'S3 Location', initialWidth: 300, minWidth: 200 },
+  { key: 'updatedAt', header: 'Updated', initialWidth: 160, minWidth: 120 },
+  { key: 'actions', header: 'Actions', initialWidth: 160, minWidth: 120, align: 'right' as const },
 ];
 
 export default function SkillsPage() {
@@ -39,6 +40,11 @@ export default function SkillsPage() {
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Skill | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [publishTarget, setPublishTarget] = useState<Skill | null>(null);
+  const [isPublishing, setIsPublishing] = useState(false);
+  const [discardTarget, setDiscardTarget] = useState<Skill | null>(null);
+  const [isDiscarding, setIsDiscarding] = useState(false);
+  const [versionModalTarget, setVersionModalTarget] = useState<Skill | null>(null);
 
   // Fetch skills on mount
   useEffect(() => {
@@ -77,10 +83,75 @@ export default function SkillsPage() {
     }
   };
 
+  const handlePublishClick = (skill: Skill) => {
+    setPublishTarget(skill);
+  };
+
+  const handlePublishConfirm = async () => {
+    if (!publishTarget) return;
+    setIsPublishing(true);
+    try {
+      const updatedSkill = await skillsService.publish(publishTarget.id);
+      setSkills((prev) => prev.map((skill) =>
+        skill.id === publishTarget.id ? updatedSkill : skill
+      ));
+      setPublishTarget(null);
+    } catch (error) {
+      console.error('Failed to publish skill:', error);
+    } finally {
+      setIsPublishing(false);
+    }
+  };
+
+  const handleDiscardClick = (skill: Skill) => {
+    setDiscardTarget(skill);
+  };
+
+  const handleDiscardConfirm = async () => {
+    if (!discardTarget) return;
+    setIsDiscarding(true);
+    try {
+      await skillsService.discardDraft(discardTarget.id);
+      // Update local state - remove draft flag
+      setSkills((prev) => prev.map((skill) =>
+        skill.id === discardTarget.id
+          ? { ...skill, hasDraft: false, draftS3Location: undefined }
+          : skill
+      ));
+      setDiscardTarget(null);
+    } catch (error) {
+      console.error('Failed to discard draft:', error);
+    } finally {
+      setIsDiscarding(false);
+    }
+  };
+
+  const handleVersionClick = (skill: Skill) => {
+    setVersionModalTarget(skill);
+  };
+
+  const handleRollback = (updatedSkill: Skill) => {
+    setSkills((prev) => prev.map((skill) =>
+      skill.id === updatedSkill.id ? updatedSkill : skill
+    ));
+    setVersionModalTarget(null);
+  };
+
   const handleUpload = async (file: File, name?: string) => {
     try {
       const skill = await skillsService.upload(file, name || file.name.replace('.zip', ''));
-      setSkills((prev) => [...prev, skill]);
+      // Check if skill already exists (by ID) and update, otherwise add
+      setSkills((prev) => {
+        const existingIndex = prev.findIndex((s) => s.id === skill.id);
+        if (existingIndex >= 0) {
+          // Update existing skill
+          const updated = [...prev];
+          updated[existingIndex] = skill;
+          return updated;
+        }
+        // Add new skill
+        return [...prev, skill];
+      });
       setIsUploadModalOpen(false);
     } catch (error) {
       console.error('Failed to upload skill:', error);
@@ -89,7 +160,18 @@ export default function SkillsPage() {
 
   const handleGenerate = async (skill: Skill) => {
     // Skill is already created and saved by the GenerateSkillForm component
-    setSkills((prev) => [...prev, skill]);
+    // Check if skill already exists (by ID) and update, otherwise add
+    setSkills((prev) => {
+      const existingIndex = prev.findIndex((s) => s.id === skill.id);
+      if (existingIndex >= 0) {
+        // Update existing skill
+        const updated = [...prev];
+        updated[existingIndex] = skill;
+        return updated;
+      }
+      // Add new skill
+      return [...prev, skill];
+    });
     setIsGenerateModalOpen(false);
   };
 
@@ -165,6 +247,24 @@ export default function SkillsPage() {
                   </span>
                 </ResizableTableCell>
                 <ResizableTableCell>
+                  <div className="flex items-center gap-2">
+                    {skill.currentVersion > 0 ? (
+                      <span className="px-2 py-0.5 bg-primary/20 text-primary text-xs font-medium rounded">
+                        v{skill.currentVersion}
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 bg-muted/20 text-muted text-xs rounded">
+                        Unpublished
+                      </span>
+                    )}
+                    {skill.hasDraft && (
+                      <span className="px-2 py-0.5 bg-status-warning/20 text-status-warning text-xs rounded" title="Has unpublished changes">
+                        Draft
+                      </span>
+                    )}
+                  </div>
+                </ResizableTableCell>
+                <ResizableTableCell>
                   {skill.s3Location ? (
                     <span className="text-primary text-sm" title={skill.s3Location}>
                       {skill.s3Location}
@@ -179,15 +279,37 @@ export default function SkillsPage() {
                   </span>
                 </ResizableTableCell>
                 <ResizableTableCell align="right">
-                  <div className="flex items-center justify-end gap-2">
-                    <button className="p-2 rounded-lg text-muted hover:text-white hover:bg-dark-hover transition-colors">
-                      <span className="material-symbols-outlined text-xl">edit</span>
+                  <div className="flex items-center justify-end gap-1">
+                    {skill.hasDraft && (
+                      <>
+                        <button
+                          onClick={() => handlePublishClick(skill)}
+                          className="p-1.5 rounded-lg text-status-success hover:bg-status-success/10 transition-colors"
+                          title="Publish draft as new version"
+                        >
+                          <span className="material-symbols-outlined text-lg">publish</span>
+                        </button>
+                        <button
+                          onClick={() => handleDiscardClick(skill)}
+                          className="p-1.5 rounded-lg text-status-warning hover:bg-status-warning/10 transition-colors"
+                          title="Discard draft"
+                        >
+                          <span className="material-symbols-outlined text-lg">undo</span>
+                        </button>
+                      </>
+                    )}
+                    <button
+                      onClick={() => handleVersionClick(skill)}
+                      className="p-1.5 rounded-lg text-muted hover:text-white hover:bg-dark-hover transition-colors"
+                      title="Manage versions"
+                    >
+                      <span className="material-symbols-outlined text-lg">history</span>
                     </button>
                     <button
                       onClick={() => handleDeleteClick(skill)}
-                      className="p-2 rounded-lg text-muted hover:text-status-error hover:bg-status-error/10 transition-colors"
+                      className="p-1.5 rounded-lg text-muted hover:text-status-error hover:bg-status-error/10 transition-colors"
                     >
-                      <span className="material-symbols-outlined text-xl">delete</span>
+                      <span className="material-symbols-outlined text-lg">delete</span>
                     </button>
                   </div>
                 </ResizableTableCell>
@@ -257,11 +379,244 @@ export default function SkillsPage() {
           <>
             Are you sure you want to delete <strong className="text-white">{deleteTarget?.name}</strong>?
             <br />
-            <span className="text-sm">This will remove the skill from local storage, S3, and database.</span>
+            <span className="text-sm text-status-error font-medium">
+              ⚠️ This will permanently delete ALL versions (v1-v{deleteTarget?.currentVersion || 1}), drafts, and data.
+            </span>
+            <br />
+            <span className="text-sm">The skill will be removed from local storage, S3, and database.</span>
           </>
         }
-        confirmText="Delete"
+        confirmText="Delete All Versions"
         isLoading={isDeleting}
+      />
+
+      {/* Publish Confirmation Dialog */}
+      <ConfirmDialog
+        isOpen={publishTarget !== null}
+        onClose={() => setPublishTarget(null)}
+        onConfirm={handlePublishConfirm}
+        title="Publish Draft"
+        message={
+          <>
+            Publish draft of <strong className="text-white">{publishTarget?.name}</strong> as{' '}
+            <strong className="text-primary">v{(publishTarget?.currentVersion || 0) + 1}</strong>?
+            <br />
+            <span className="text-sm">This will make the draft the current published version.</span>
+          </>
+        }
+        confirmText="Publish"
+        isLoading={isPublishing}
+        variant="info"
+      />
+
+      {/* Discard Draft Confirmation Dialog */}
+      <ConfirmDialog
+        isOpen={discardTarget !== null}
+        onClose={() => setDiscardTarget(null)}
+        onConfirm={handleDiscardConfirm}
+        title="Discard Draft"
+        message={
+          <>
+            Discard unpublished draft of <strong className="text-white">{discardTarget?.name}</strong>?
+            <br />
+            <span className="text-sm">This will delete the draft from S3. The current published version will remain unchanged.</span>
+          </>
+        }
+        confirmText="Discard"
+        isLoading={isDiscarding}
+        variant="warning"
+      />
+
+      {/* Version Management Modal */}
+      <Modal
+        isOpen={versionModalTarget !== null}
+        onClose={() => setVersionModalTarget(null)}
+        title="Version History"
+        size="lg"
+      >
+        {versionModalTarget && (
+          <VersionManagementPanel
+            skill={versionModalTarget}
+            onRollback={handleRollback}
+            onClose={() => setVersionModalTarget(null)}
+          />
+        )}
+      </Modal>
+    </div>
+  );
+}
+
+// Version Management Panel Component
+function VersionManagementPanel({
+  skill,
+  onRollback,
+  onClose,
+}: {
+  skill: Skill;
+  onRollback: (updatedSkill: Skill) => void;
+  onClose: () => void;
+}) {
+  const [versionList, setVersionList] = useState<SkillVersionList | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRollingBack, setIsRollingBack] = useState(false);
+  const [rollbackTarget, setRollbackTarget] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const fetchVersions = async () => {
+      try {
+        const data = await skillsService.listVersions(skill.id);
+        setVersionList(data);
+      } catch (err) {
+        console.error('Failed to fetch versions:', err);
+        setError('Failed to load version history');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    fetchVersions();
+  }, [skill.id]);
+
+  const handleRollbackConfirm = async () => {
+    if (rollbackTarget === null) return;
+    setIsRollingBack(true);
+    try {
+      const updatedSkill = await skillsService.rollback(skill.id, rollbackTarget);
+      onRollback(updatedSkill);
+    } catch (err) {
+      console.error('Failed to rollback:', err);
+      setError('Failed to rollback to selected version');
+    } finally {
+      setIsRollingBack(false);
+      setRollbackTarget(null);
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Spinner size="lg" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="text-center py-8">
+        <span className="material-symbols-outlined text-4xl text-status-error mb-2">error</span>
+        <p className="text-status-error">{error}</p>
+        <Button variant="secondary" className="mt-4" onClick={onClose}>
+          Close
+        </Button>
+      </div>
+    );
+  }
+
+  const versions = versionList?.versions || [];
+  const currentVersion = versionList?.currentVersion || 0;
+
+  return (
+    <div className="space-y-4">
+      {/* Skill Info */}
+      <div className="bg-dark-bg border border-dark-border rounded-lg p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="font-medium text-white">{skill.name}</h3>
+            <p className="text-sm text-muted">{skill.description}</p>
+          </div>
+          <div className="text-right">
+            <span className="px-3 py-1 bg-primary/20 text-primary text-sm font-medium rounded">
+              Current: v{currentVersion}
+            </span>
+            {versionList?.hasDraft && (
+              <span className="ml-2 px-2 py-1 bg-status-warning/20 text-status-warning text-xs rounded">
+                Has Draft
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Version List */}
+      {versions.length === 0 ? (
+        <div className="text-center py-8 text-muted">
+          <span className="material-symbols-outlined text-4xl mb-2">inventory_2</span>
+          <p>No published versions yet</p>
+          <p className="text-sm">Publish a draft to create the first version</p>
+        </div>
+      ) : (
+        <div className="space-y-2 max-h-80 overflow-y-auto">
+          {versions.map((version) => (
+            <div
+              key={version.id}
+              className={`flex items-center justify-between p-3 rounded-lg border transition-colors ${
+                version.version === currentVersion
+                  ? 'bg-primary/10 border-primary/30'
+                  : 'bg-dark-bg border-dark-border hover:border-dark-hover'
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <span className={`px-2 py-0.5 text-sm font-medium rounded ${
+                  version.version === currentVersion
+                    ? 'bg-primary/20 text-primary'
+                    : 'bg-dark-hover text-muted'
+                }`}>
+                  v{version.version}
+                </span>
+                <div>
+                  <p className="text-sm text-white">
+                    {new Date(version.createdAt).toLocaleString()}
+                  </p>
+                  {version.changeSummary && (
+                    <p className="text-xs text-muted">{version.changeSummary}</p>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {version.version === currentVersion ? (
+                  <span className="text-xs text-primary font-medium">Active</span>
+                ) : (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setRollbackTarget(version.version)}
+                  >
+                    Switch to this version
+                  </Button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Actions */}
+      <div className="flex justify-end pt-4 border-t border-dark-border">
+        <Button variant="secondary" onClick={onClose}>
+          Close
+        </Button>
+      </div>
+
+      {/* Rollback Confirmation Dialog */}
+      <ConfirmDialog
+        isOpen={rollbackTarget !== null}
+        onClose={() => setRollbackTarget(null)}
+        onConfirm={handleRollbackConfirm}
+        title="Switch Version"
+        message={
+          <>
+            Switch <strong className="text-white">{skill.name}</strong> from{' '}
+            <strong className="text-primary">v{currentVersion}</strong> to{' '}
+            <strong className="text-primary">v{rollbackTarget}</strong>?
+            <br />
+            <span className="text-sm">
+              This will update the active version. Any unpublished draft will be discarded.
+            </span>
+          </>
+        }
+        confirmText="Switch Version"
+        isLoading={isRollingBack}
+        variant="warning"
       />
     </div>
   );

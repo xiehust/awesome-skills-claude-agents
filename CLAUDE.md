@@ -192,6 +192,50 @@ frontend/
 - **React Router v7** for navigation
 - **Tailwind CSS 4.x** for styling (dark mode: `#101622` background, `#2b6cee` primary)
 
+### API Data Naming Convention (CRITICAL)
+
+**Backend uses `snake_case`, Frontend uses `camelCase`.**
+
+The backend (Python/FastAPI) uses `snake_case` for all field names, while the frontend (TypeScript/React) uses `camelCase`. Manual transformation functions handle the conversion.
+
+**Transformation Functions Location**:
+| Service | File | Function |
+|---------|------|----------|
+| Skills | `frontend/src/services/skills.ts` | `toCamelCase()` |
+| Agents | `frontend/src/services/agents.ts` | `toCamelCase()` |
+| MCP | `frontend/src/services/mcp.ts` | `toCamelCase()` |
+
+**IMPORTANT: When adding new fields to a schema:**
+
+1. Add field to backend Pydantic model (`backend/schemas/*.py`) - uses `snake_case`
+2. Add field to frontend TypeScript interface (`frontend/src/types/index.ts`) - uses `camelCase`
+3. **Update the corresponding `toCamelCase()` function** in `frontend/src/services/*.ts`
+
+**Example - Adding a new field `current_version`:**
+
+```python
+# backend/schemas/skill.py
+class SkillResponse(BaseModel):
+    current_version: int = 0  # snake_case
+```
+
+```typescript
+// frontend/src/types/index.ts
+export interface Skill {
+  currentVersion: number;  // camelCase
+}
+
+// frontend/src/services/skills.ts - MUST UPDATE THIS!
+const toCamelCase = (data: Record<string, unknown>): Skill => {
+  return {
+    // ... existing fields ...
+    currentVersion: (data.current_version as number) ?? 0,  // Map snake_case to camelCase
+  };
+};
+```
+
+**Common Bug**: Forgetting to update `toCamelCase()` results in new fields being `undefined` in the frontend, even though the API returns them correctly.
+
 ## Important Implementation Notes
 
 ### Claude Agent SDK Usage

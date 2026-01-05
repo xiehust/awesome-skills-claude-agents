@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     dynamodb_users_table: str = "awesome_skills_platform_users"
     dynamodb_sessions_table: str = "awesome_skills_platform_sessions"
     dynamodb_messages_table: str = "awesome_skills_platform_messages"
+    dynamodb_skill_versions_table: str = "awesome_skills_platform_skill_versions"
 
     # JWT Authentication
     jwt_secret_key: str = "your-secret-key-change-in-production"

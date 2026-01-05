@@ -16,6 +16,10 @@ class SkillMetadata(BaseModel):
     updated_at: datetime | None = None
     version: str = Field(default="1.0.0")
     is_system: bool = Field(default=False)
+    # Version control fields
+    current_version: int = Field(default=0, description="Current published version (0 = never published)")
+    has_draft: bool = Field(default=False, description="Whether unpublished draft exists")
+    draft_s3_location: str | None = Field(default=None, description="S3 location of draft")
 
 
 class SkillCreateRequest(BaseModel):
@@ -49,6 +53,10 @@ class SkillResponse(BaseModel):
     updated_at: str
     version: str
     is_system: bool
+    # Version control fields
+    current_version: int = 0
+    has_draft: bool = False
+    draft_s3_location: str | None = None
 
 
 class SyncError(BaseModel):
@@ -82,4 +90,39 @@ class SkillFinalizeRequest(BaseModel):
     """Request model for finalizing skill creation."""
 
     skill_name: str = Field(..., min_length=1, max_length=255, description="Name of the skill to finalize")
+
+
+# ============== Version Control Models ==============
+
+class SkillVersionResponse(BaseModel):
+    """Response model for a skill version."""
+
+    id: str
+    skill_id: str
+    version: int
+    s3_location: str
+    created_at: str
+    change_summary: str | None = None
+
+
+class SkillVersionListResponse(BaseModel):
+    """Response model for listing skill versions."""
+
+    skill_id: str
+    skill_name: str
+    current_version: int
+    has_draft: bool
+    versions: list[SkillVersionResponse]
+
+
+class PublishDraftRequest(BaseModel):
+    """Request model for publishing a draft."""
+
+    change_summary: str | None = Field(None, max_length=500, description="Optional summary of changes")
+
+
+class RollbackRequest(BaseModel):
+    """Request model for rolling back to a specific version."""
+
+    version: int = Field(..., ge=1, description="Version number to rollback to")
 

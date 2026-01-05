@@ -11,6 +11,10 @@ from schemas.skill import (
     SyncResultResponse,
     SkillGenerateWithAgentRequest,
     SkillFinalizeRequest,
+    SkillVersionResponse,
+    SkillVersionListResponse,
+    PublishDraftRequest,
+    RollbackRequest,
 )
 from database import db
 from core.skill_manager import skill_manager
@@ -58,13 +62,15 @@ async def upload_skill(
     file: UploadFile = File(...),
     name: str = Form(None),
 ):
-    """Upload a skill package (ZIP file).
+    """Upload a skill package (ZIP file) as a draft.
 
     This will:
     1. Validate the ZIP contains SKILL.md
     2. Extract to workspace/.claude/skills/{name}/
-    3. Upload extracted files to S3
-    4. Save metadata to database
+    3. Upload extracted files to S3 draft folder
+    4. Save/update metadata to database with has_draft=True
+
+    After upload, use POST /{skill_id}/publish to publish as a new version.
     """
     if not file.filename or not file.filename.endswith(".zip"):
         raise ValidationException(
@@ -82,25 +88,45 @@ async def upload_skill(
         # Read file content
         zip_content = await file.read()
 
-        # Upload skill package (extract to local, upload to S3)
+        # Upload skill package (extract to local, upload to S3 draft)
         result = await skill_manager.upload_skill_package(
             zip_content=zip_content,
             skill_name=skill_name,
             original_filename=file.filename
         )
 
-        # Save to database
-        skill_data = {
-            "name": result["name"],
-            "description": result["description"],
-            "version": result["version"],
-            "s3_location": result["s3_location"],
-            "created_by": "user",
-            "is_system": False,
-        }
-        skill = await db.skills.put(skill_data)
+        # Check if skill already exists (by looking for matching s3_location pattern)
+        existing_skills = await db.skills.list()
+        existing_skill = None
+        for s in existing_skills:
+            s3_loc = s.get("s3_location") or s.get("draft_s3_location") or ""
+            if f"/skills/{skill_name}/" in s3_loc:
+                existing_skill = s
+                break
 
-        logger.info(f"Uploaded skill '{skill_name}': local={result['local_path']}, s3={result['s3_location']}")
+        if existing_skill:
+            # Update existing skill with draft info
+            skill = await db.skills.update(existing_skill["id"], {
+                "has_draft": True,
+                "draft_s3_location": result["draft_s3_location"],
+            })
+            logger.info(f"Updated skill '{skill_name}' with new draft: {result['draft_s3_location']}")
+        else:
+            # Create new skill record (with draft, never published)
+            skill_data = {
+                "name": result["name"],
+                "description": result["description"],
+                "version": result["version"],
+                "s3_location": None,  # No published version yet
+                "draft_s3_location": result["draft_s3_location"],
+                "has_draft": True,
+                "current_version": 0,  # Never published
+                "created_by": "user",
+                "is_system": False,
+            }
+            skill = await db.skills.put(skill_data)
+            logger.info(f"Created new skill '{skill_name}' with draft: {result['draft_s3_location']}")
+
         return skill
 
     except ValueError as e:
@@ -189,7 +215,7 @@ async def generate_skill(request: SkillGenerateRequest):
 
 @router.delete("/{skill_id}", status_code=204)
 async def delete_skill(skill_id: str):
-    """Delete a skill from database, local directory and S3."""
+    """Delete a skill from database, local directory, S3 (all versions), and version records."""
     skill = await db.skills.get(skill_id)
     if not skill:
         raise SkillNotFoundException(
@@ -204,13 +230,13 @@ async def delete_skill(skill_id: str):
             suggested_action="Only user-created skills can be deleted"
         )
 
-    # Extract skill folder name from s3_location or name
-    s3_location = skill.get("s3_location", "")
+    # Extract skill folder name from s3_location or draft_s3_location or name
+    s3_location = skill.get("s3_location") or skill.get("draft_s3_location", "")
     skill_folder_name = None
 
     if s3_location:
-        # Extract from s3://bucket/skills/name/ format
-        match = re.search(r'/skills/([^/]+)/?', s3_location)
+        # Extract from s3://bucket/skills/name/... format
+        match = re.search(r'/skills/([^/]+)/', s3_location)
         if match:
             skill_folder_name = match.group(1)
 
@@ -218,7 +244,7 @@ async def delete_skill(skill_id: str):
         # Fallback: sanitize skill name
         skill_folder_name = re.sub(r'[^a-zA-Z0-9_-]', '-', skill.get("name", "").lower())
 
-    # Delete files from local and S3
+    # Delete files from local and S3 (all versions)
     if skill_folder_name:
         try:
             await skill_manager.delete_skill_files(skill_folder_name)
@@ -227,7 +253,14 @@ async def delete_skill(skill_id: str):
             logger.warning(f"Failed to delete skill files for {skill_folder_name}: {e}")
             # Continue to delete from DB even if file deletion fails
 
-    # Delete from database
+    # Delete all version records from database
+    try:
+        deleted_versions = await db.skill_versions.delete_by_skill(skill_id)
+        logger.info(f"Deleted {deleted_versions} version records for skill: {skill_id}")
+    except Exception as e:
+        logger.warning(f"Failed to delete version records for {skill_id}: {e}")
+
+    # Delete skill from database
     await db.skills.delete(skill_id)
     logger.info(f"Deleted skill from DB: {skill_id}")
 
@@ -316,15 +349,16 @@ async def generate_skill_with_agent(request: Request):
 
 @router.post("/finalize", response_model=SkillResponse, status_code=201)
 async def finalize_skill(request: SkillFinalizeRequest):
-    """Finalize skill creation by syncing to S3 and saving to database.
+    """Finalize skill creation by uploading to S3 draft and saving to database.
 
     This endpoint:
     1. Validates the skill directory exists locally
     2. Extracts metadata from SKILL.md
-    3. Uploads to S3
-    4. Saves metadata to database
+    3. Uploads to S3 draft folder
+    4. Saves/updates metadata to database with has_draft=True
 
     Call this after generate-with-agent completes successfully.
+    After this, use POST /{skill_id}/publish to publish as a new version.
     """
     # Sanitize skill name
     skill_name = re.sub(r'[^a-zA-Z0-9_-]', '-', request.skill_name.lower())
@@ -359,21 +393,44 @@ async def finalize_skill(request: SkillFinalizeRequest):
         # Extract metadata from SKILL.md
         metadata = skill_manager.extract_skill_metadata(skill_path)
 
-        # Upload to S3 (note: parameter order is skill_name, skill_dir)
-        s3_location = await skill_manager.upload_directory_to_s3(skill_name, skill_path)
+        # Upload to S3 DRAFT folder
+        draft_s3_location = await skill_manager.upload_to_draft(skill_name, skill_path)
 
-        # Save to database (metadata is a SkillMetadata object, not a dict)
-        skill_data = {
-            "name": metadata.name or skill_name,
-            "description": metadata.description or "",
-            "version": metadata.version or "1.0.0",
-            "s3_location": s3_location,
-            "created_by": "ai-agent",
-            "is_system": False,
-        }
-        skill = await db.skills.put(skill_data)
+        # Check if skill already exists (by looking for matching s3_location pattern)
+        existing_skills = await db.skills.list()
+        existing_skill = None
+        for s in existing_skills:
+            s3_loc = s.get("s3_location") or s.get("draft_s3_location") or ""
+            if f"/skills/{skill_name}/" in s3_loc:
+                existing_skill = s
+                break
 
-        logger.info(f"Finalized skill '{skill_name}': s3={s3_location}")
+        if existing_skill:
+            # Update existing skill with draft info
+            skill = await db.skills.update(existing_skill["id"], {
+                "name": metadata.name or skill_name,
+                "description": metadata.description or "",
+                "version": metadata.version or "1.0.0",
+                "has_draft": True,
+                "draft_s3_location": draft_s3_location,
+            })
+            logger.info(f"Updated skill '{skill_name}' with new draft: {draft_s3_location}")
+        else:
+            # Create new skill record (with draft, never published)
+            skill_data = {
+                "name": metadata.name or skill_name,
+                "description": metadata.description or "",
+                "version": metadata.version or "1.0.0",
+                "s3_location": None,  # No published version yet
+                "draft_s3_location": draft_s3_location,
+                "has_draft": True,
+                "current_version": 0,  # Never published
+                "created_by": "ai-agent",
+                "is_system": False,
+            }
+            skill = await db.skills.put(skill_data)
+            logger.info(f"Created new skill '{skill_name}' with draft: {draft_s3_location}")
+
         return skill
 
     except Exception as e:
@@ -382,4 +439,249 @@ async def finalize_skill(request: SkillFinalizeRequest):
             message="Failed to finalize skill",
             detail=str(e),
             suggested_action="Please check the skill files and try again"
+        )
+
+
+# ============== Version Control Endpoints ==============
+
+def _get_skill_folder_name(skill: dict) -> str:
+    """Extract skill folder name from skill record."""
+    s3_location = skill.get("s3_location") or skill.get("draft_s3_location", "")
+    if s3_location:
+        # Extract from s3://bucket/skills/name/... format
+        match = re.search(r'/skills/([^/]+)/', s3_location)
+        if match:
+            return match.group(1)
+    # Fallback: sanitize skill name
+    return re.sub(r'[^a-zA-Z0-9_-]', '-', skill.get("name", "").lower())
+
+
+@router.get("/{skill_id}/versions", response_model=SkillVersionListResponse)
+async def list_skill_versions(skill_id: str):
+    """List all versions of a skill.
+
+    Returns version history with current version and draft status.
+    """
+    skill = await db.skills.get(skill_id)
+    if not skill:
+        raise SkillNotFoundException(
+            detail=f"Skill with ID '{skill_id}' does not exist",
+            suggested_action="Please check the skill ID and try again"
+        )
+
+    # Get all versions from database
+    versions = await db.skill_versions.list_by_skill(skill_id)
+
+    return SkillVersionListResponse(
+        skill_id=skill_id,
+        skill_name=skill.get("name", ""),
+        current_version=skill.get("current_version", 0),
+        has_draft=skill.get("has_draft", False),
+        versions=[
+            SkillVersionResponse(
+                id=v["id"],
+                skill_id=v["skill_id"],
+                version=v["version"],
+                s3_location=v["s3_location"],
+                created_at=v["created_at"],
+                change_summary=v.get("change_summary")
+            )
+            for v in versions
+        ]
+    )
+
+
+@router.get("/{skill_id}/versions/{version}", response_model=SkillVersionResponse)
+async def get_skill_version(skill_id: str, version: int):
+    """Get details of a specific skill version."""
+    skill = await db.skills.get(skill_id)
+    if not skill:
+        raise SkillNotFoundException(
+            detail=f"Skill with ID '{skill_id}' does not exist",
+            suggested_action="Please check the skill ID and try again"
+        )
+
+    version_record = await db.skill_versions.get_by_skill_and_version(skill_id, version)
+    if not version_record:
+        raise ValidationException(
+            message="Version not found",
+            detail=f"Version {version} does not exist for this skill",
+            suggested_action="Use the list versions endpoint to see available versions"
+        )
+
+    return SkillVersionResponse(
+        id=version_record["id"],
+        skill_id=version_record["skill_id"],
+        version=version_record["version"],
+        s3_location=version_record["s3_location"],
+        created_at=version_record["created_at"],
+        change_summary=version_record.get("change_summary")
+    )
+
+
+@router.post("/{skill_id}/publish", response_model=SkillResponse)
+async def publish_skill_draft(skill_id: str, request: PublishDraftRequest | None = None):
+    """Publish the draft as a new version.
+
+    This will:
+    1. Copy draft folder to v{n+1} folder in S3
+    2. Delete draft folder
+    3. Update skill's current_version and s3_location
+    4. Create version record in database
+    5. Download new version to local workspace
+    """
+    skill = await db.skills.get(skill_id)
+    if not skill:
+        raise SkillNotFoundException(
+            detail=f"Skill with ID '{skill_id}' does not exist",
+            suggested_action="Please check the skill ID and try again"
+        )
+
+    if not skill.get("has_draft", False):
+        raise ValidationException(
+            message="No draft to publish",
+            detail="This skill has no unpublished draft",
+            suggested_action="Upload or modify the skill first to create a draft"
+        )
+
+    try:
+        skill_folder_name = _get_skill_folder_name(skill)
+        current_version = skill.get("current_version", 0)
+        new_version = current_version + 1
+
+        # Publish draft to new version in S3
+        s3_location = await skill_manager.publish_draft(skill_folder_name, new_version)
+
+        # Create version record
+        change_summary = request.change_summary if request else None
+        version_record = {
+            "skill_id": skill_id,
+            "version": new_version,
+            "s3_location": s3_location,
+            "change_summary": change_summary,
+        }
+        await db.skill_versions.put(version_record)
+
+        # Update skill record
+        updated_skill = await db.skills.update(skill_id, {
+            "current_version": new_version,
+            "s3_location": s3_location,
+            "has_draft": False,
+            "draft_s3_location": None,
+        })
+
+        # Download to local workspace (local always reflects published version)
+        await skill_manager.download_version_to_local(skill_folder_name, new_version)
+
+        logger.info(f"Published skill {skill_id} as v{new_version}")
+        return updated_skill
+
+    except Exception as e:
+        logger.error(f"Failed to publish skill draft: {e}")
+        raise ValidationException(
+            message="Failed to publish draft",
+            detail=str(e),
+            suggested_action="Please check S3 connectivity and try again"
+        )
+
+
+@router.delete("/{skill_id}/draft", status_code=204)
+async def discard_skill_draft(skill_id: str):
+    """Discard the unpublished draft.
+
+    This will:
+    1. Delete draft folder from S3
+    2. Clear draft status in database
+    """
+    skill = await db.skills.get(skill_id)
+    if not skill:
+        raise SkillNotFoundException(
+            detail=f"Skill with ID '{skill_id}' does not exist",
+            suggested_action="Please check the skill ID and try again"
+        )
+
+    if not skill.get("has_draft", False):
+        raise ValidationException(
+            message="No draft to discard",
+            detail="This skill has no unpublished draft",
+            suggested_action="No action needed"
+        )
+
+    try:
+        skill_folder_name = _get_skill_folder_name(skill)
+
+        # Delete draft from S3
+        await skill_manager.discard_draft(skill_folder_name)
+
+        # Update skill record
+        await db.skills.update(skill_id, {
+            "has_draft": False,
+            "draft_s3_location": None,
+        })
+
+        logger.info(f"Discarded draft for skill {skill_id}")
+
+    except Exception as e:
+        logger.error(f"Failed to discard skill draft: {e}")
+        raise ValidationException(
+            message="Failed to discard draft",
+            detail=str(e),
+            suggested_action="Please check S3 connectivity and try again"
+        )
+
+
+@router.post("/{skill_id}/rollback", response_model=SkillResponse)
+async def rollback_skill_version(skill_id: str, request: RollbackRequest):
+    """Rollback to a specific version.
+
+    This will:
+    1. Update skill's current_version and s3_location to point to target version
+    2. Download target version to local workspace
+    3. Discard any existing draft
+    """
+    skill = await db.skills.get(skill_id)
+    if not skill:
+        raise SkillNotFoundException(
+            detail=f"Skill with ID '{skill_id}' does not exist",
+            suggested_action="Please check the skill ID and try again"
+        )
+
+    target_version = request.version
+
+    # Verify target version exists
+    version_record = await db.skill_versions.get_by_skill_and_version(skill_id, target_version)
+    if not version_record:
+        raise ValidationException(
+            message="Version not found",
+            detail=f"Version {target_version} does not exist for this skill",
+            suggested_action="Use the list versions endpoint to see available versions"
+        )
+
+    try:
+        skill_folder_name = _get_skill_folder_name(skill)
+
+        # Discard draft if exists
+        if skill.get("has_draft", False):
+            await skill_manager.discard_draft(skill_folder_name)
+
+        # Update skill record to point to target version
+        updated_skill = await db.skills.update(skill_id, {
+            "current_version": target_version,
+            "s3_location": version_record["s3_location"],
+            "has_draft": False,
+            "draft_s3_location": None,
+        })
+
+        # Download target version to local workspace
+        await skill_manager.download_version_to_local(skill_folder_name, target_version)
+
+        logger.info(f"Rolled back skill {skill_id} to v{target_version}")
+        return updated_skill
+
+    except Exception as e:
+        logger.error(f"Failed to rollback skill: {e}")
+        raise ValidationException(
+            message="Failed to rollback",
+            detail=str(e),
+            suggested_action="Please check S3 connectivity and try again"
         )

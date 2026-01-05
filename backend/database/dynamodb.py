@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import aioboto3
 from datetime import datetime
+import time
 from typing import Optional, TypeVar, Generic
 from uuid import uuid4
 from botocore.exceptions import ClientError
@@ -131,7 +132,25 @@ class DynamoDBTable(BaseTable[T], Generic[T]):
 
 
 class DynamoDBMessagesTable(DynamoDBTable[T], Generic[T]):
-    """Specialized DynamoDB table for messages with session_id querying support."""
+    """Specialized DynamoDB table for messages with session_id querying support and TTL."""
+
+    # TTL duration in seconds (7 days)
+    TTL_SECONDS = 7 * 24 * 60 * 60  # 604800 seconds
+
+    async def put(self, item: T) -> T:
+        """Insert or update a message with TTL expiration (7 days)."""
+        if "id" not in item:
+            item["id"] = str(uuid4())
+        if "created_at" not in item:
+            item["created_at"] = datetime.now().isoformat()
+        item["updated_at"] = datetime.now().isoformat()
+
+        # Set TTL: expires 7 days from now (Unix epoch timestamp in seconds)
+        item["expires_at"] = int(time.time()) + self.TTL_SECONDS
+
+        table = await self._get_table()
+        await table.put_item(Item=item)
+        return item
 
     async def list_by_session(self, session_id: str) -> list[T]:
         """List all messages for a session, ordered by timestamp."""
@@ -166,6 +185,65 @@ class DynamoDBMessagesTable(DynamoDBTable[T], Generic[T]):
         return deleted_count
 
 
+class DynamoDBSkillVersionsTable(DynamoDBTable[T], Generic[T]):
+    """Specialized DynamoDB table for skill versions with skill_id querying support."""
+
+    async def list_by_skill(self, skill_id: str) -> list[T]:
+        """List all versions for a skill, ordered by version number descending."""
+        table = await self._get_table()
+
+        try:
+            # Try using GSI for skill_id
+            response = await table.query(
+                IndexName="skill_id-index",
+                KeyConditionExpression="skill_id = :sid",
+                ExpressionAttributeValues={":sid": skill_id},
+                ScanIndexForward=False  # Descending order (newest first)
+            )
+            return response.get("Items", [])
+        except ClientError:
+            # Fall back to scan with filter if GSI doesn't exist
+            response = await table.scan(
+                FilterExpression="skill_id = :sid",
+                ExpressionAttributeValues={":sid": skill_id}
+            )
+            # Sort by version descending
+            items = response.get("Items", [])
+            return sorted(items, key=lambda x: x.get("version", 0), reverse=True)
+
+    async def get_by_skill_and_version(self, skill_id: str, version: int) -> Optional[T]:
+        """Get a specific version of a skill."""
+        table = await self._get_table()
+
+        try:
+            # Try using GSI
+            response = await table.query(
+                IndexName="skill_id-index",
+                KeyConditionExpression="skill_id = :sid",
+                FilterExpression="version = :ver",
+                ExpressionAttributeValues={":sid": skill_id, ":ver": version}
+            )
+            items = response.get("Items", [])
+            return items[0] if items else None
+        except ClientError:
+            # Fall back to scan
+            response = await table.scan(
+                FilterExpression="skill_id = :sid AND version = :ver",
+                ExpressionAttributeValues={":sid": skill_id, ":ver": version}
+            )
+            items = response.get("Items", [])
+            return items[0] if items else None
+
+    async def delete_by_skill(self, skill_id: str) -> int:
+        """Delete all versions for a skill. Returns count of deleted items."""
+        versions = await self.list_by_skill(skill_id)
+        deleted_count = 0
+        for ver in versions:
+            if await self.delete(ver["id"]):
+                deleted_count += 1
+        return deleted_count
+
+
 class DynamoDBDatabase(BaseDatabase):
     """DynamoDB database client implementing BaseDatabase interface."""
 
@@ -177,6 +255,7 @@ class DynamoDBDatabase(BaseDatabase):
         self._sessions = DynamoDBTable[dict](settings.dynamodb_sessions_table, self._session)
         self._messages = DynamoDBMessagesTable[dict](settings.dynamodb_messages_table, self._session)
         self._users = DynamoDBTable[dict](settings.dynamodb_users_table, self._session)
+        self._skill_versions = DynamoDBSkillVersionsTable[dict](settings.dynamodb_skill_versions_table, self._session)
 
     @property
     def agents(self) -> DynamoDBTable:
@@ -207,6 +286,11 @@ class DynamoDBDatabase(BaseDatabase):
     def users(self) -> DynamoDBTable:
         """Get the users table."""
         return self._users
+
+    @property
+    def skill_versions(self) -> DynamoDBSkillVersionsTable:
+        """Get the skill versions table."""
+        return self._skill_versions
 
     async def health_check(self) -> bool:
         """Check if the database is healthy."""

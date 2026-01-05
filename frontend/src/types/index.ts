@@ -47,11 +47,32 @@ export interface Skill {
   updatedAt: string;
   version: string;
   isSystem: boolean;
+  // Version control fields
+  currentVersion: number;
+  hasDraft: boolean;
+  draftS3Location?: string;
 }
 
 export interface SkillCreateRequest {
   name: string;
   description: string;
+}
+
+export interface SkillVersion {
+  id: string;
+  skillId: string;
+  version: number;
+  s3Location: string;
+  createdAt: string;
+  changeSummary?: string;
+}
+
+export interface SkillVersionList {
+  skillId: string;
+  skillName: string;
+  currentVersion: number;
+  hasDraft: boolean;
+  versions: SkillVersion[];
 }
 
 export interface SyncError {

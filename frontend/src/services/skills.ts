@@ -1,5 +1,5 @@
 import api from './api';
-import type { Skill, SkillCreateRequest, SyncResult, StreamEvent } from '../types';
+import type { Skill, SkillCreateRequest, SyncResult, StreamEvent, SkillVersionList } from '../types';
 
 // Request type for skill generation with agent
 export interface SkillGenerateWithAgentRequest {
@@ -22,6 +22,10 @@ const toCamelCase = (data: Record<string, unknown>): Skill => {
     updatedAt: data.updated_at as string,
     version: data.version as string,
     isSystem: data.is_system as boolean,
+    // Version control fields
+    currentVersion: (data.current_version as number) ?? 0,
+    hasDraft: (data.has_draft as boolean) ?? false,
+    draftS3Location: data.draft_s3_location as string | undefined,
   };
 };
 
@@ -179,5 +183,46 @@ export const skillsService = {
       skill_name: skillName,
     });
     return toCamelCase(response.data);
+  },
+
+  // Publish draft as new version
+  async publish(skillId: string, changeSummary?: string): Promise<Skill> {
+    const response = await api.post<Record<string, unknown>>(`/skills/${skillId}/publish`, {
+      change_summary: changeSummary,
+    });
+    return toCamelCase(response.data);
+  },
+
+  // Discard unpublished draft
+  async discardDraft(skillId: string): Promise<void> {
+    await api.delete(`/skills/${skillId}/draft`);
+  },
+
+  // Rollback to a specific version
+  async rollback(skillId: string, version: number): Promise<Skill> {
+    const response = await api.post<Record<string, unknown>>(`/skills/${skillId}/rollback`, {
+      version,
+    });
+    return toCamelCase(response.data);
+  },
+
+  // List all versions of a skill
+  async listVersions(skillId: string): Promise<SkillVersionList> {
+    const response = await api.get<Record<string, unknown>>(`/skills/${skillId}/versions`);
+    const data = response.data;
+    return {
+      skillId: data.skill_id as string,
+      skillName: data.skill_name as string,
+      currentVersion: data.current_version as number,
+      hasDraft: data.has_draft as boolean,
+      versions: ((data.versions as Record<string, unknown>[]) || []).map((v) => ({
+        id: v.id as string,
+        skillId: v.skill_id as string,
+        version: v.version as number,
+        s3Location: v.s3_location as string,
+        createdAt: v.created_at as string,
+        changeSummary: v.change_summary as string | undefined,
+      })),
+    };
   },
 };
