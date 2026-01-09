@@ -192,8 +192,7 @@ class AgentManager:
             )
 
         # Determine permission mode
-        permission_mode = agent_config.get("permission_mode", "default")
-
+        permission_mode = agent_config.get("permission_mode", "bypassPermissions")
         # Get model from config and convert to Bedrock model ID if using Bedrock
         model = agent_config.get("model")
         if model and settings.claude_code_use_bedrock:
@@ -282,7 +281,7 @@ class AgentManager:
                 "error": f"Agent {agent_id} not found",
             }
             return
-        agent_config['allowed_tools'] = ['mcp__*']
+        agent_config['allowed_tools'] = []
         logger.info(f"Running conversation with agent {agent_id}, session {session_id}, is_resuming={is_resuming}")
         logger.info(f"Agent config: {agent_config}")
 
@@ -731,8 +730,8 @@ Current task: Create a skill named "{skill_name}" that {skill_description}"""
             "name": f"skill-creator-{session_id[:8] if session_id else 'new'}",
             "description": "Temporary agent for skill creation",
             "system_prompt": system_prompt,
-            "allowed_tools": ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "Skill"],
-            "permission_mode": "acceptEdits",
+            "allowed_tools": ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "Skill","TodoWrite","Task"],
+            "permission_mode": "bypassPermissions",
             "working_directory": settings.agent_workspace_dir,
             "enable_tool_logging": True,
             "enable_safety_checks": True,

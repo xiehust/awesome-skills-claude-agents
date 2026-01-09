@@ -482,7 +482,7 @@ function CreateAgentForm({
       name,
       description: description || undefined,
       model,
-      permissionMode: 'default',
+      permissionMode: 'bypassPermissions',
       systemPrompt: systemPrompt || undefined,
       skillIds,
       mcpIds,

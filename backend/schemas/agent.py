@@ -50,7 +50,7 @@ class AgentCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: str | None = None
     model: str | None = None
-    permission_mode: Literal["default", "acceptEdits", "plan", "bypassPermissions"] = "default"
+    permission_mode: Literal["default", "acceptEdits", "plan", "bypassPermissions"] = "bypassPermissions"
     max_turns: int | None = Field(default=100, ge=1, le=100)
     system_prompt: str | None = None
     allowed_tools: list[str] = Field(default_factory=list)
