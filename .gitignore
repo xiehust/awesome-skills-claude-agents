@@ -20,7 +20,7 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
-workspace/
+/workspace/
 # Virtual environments
 .venv/
 venv/

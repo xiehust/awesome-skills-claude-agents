@@ -317,3 +317,24 @@ export interface LoadingStateInfo {
   state: LoadingState;
   error?: ErrorResponse;
 }
+
+// Workspace File Browser Types
+export interface WorkspaceFile {
+  name: string;
+  type: 'file' | 'directory';
+  size: number;
+  modified: string;
+}
+
+export interface WorkspaceListResponse {
+  files: WorkspaceFile[];
+  currentPath: string;
+  parentPath: string | null;
+}
+
+export interface WorkspaceFileContent {
+  content: string;
+  encoding: 'utf-8' | 'base64';
+  size: number;
+  mimeType: string;
+}

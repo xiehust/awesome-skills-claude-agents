@@ -8,6 +8,11 @@ import { agentsService } from '../services/agents';
 import { skillsService } from '../services/skills';
 import { mcpService } from '../services/mcp';
 import { Spinner, ReadOnlyChips, AskUserQuestion, Dropdown, MarkdownRenderer, ConfirmDialog } from '../components/common';
+import { FileBrowser } from '../components/workspace/FileBrowser';
+import { FilePreviewModal } from '../components/workspace/FilePreviewModal';
+
+// Sidebar tab type
+type SidebarTab = 'chats' | 'files';
 
 // Pending question state
 interface PendingQuestion {
@@ -25,6 +30,11 @@ export default function ChatPage() {
   const [pendingQuestion, setPendingQuestion] = useState<PendingQuestion | null>(null);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [deleteConfirmSession, setDeleteConfirmSession] = useState<ChatSession | null>(null);
+
+  // Sidebar tab state
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>('chats');
+  // File preview state
+  const [previewFile, setPreviewFile] = useState<{ path: string; name: string } | null>(null);
 
   // Fetch agents list
   const { data: agents = [], isLoading: isLoadingAgents } = useQuery({
@@ -509,63 +519,114 @@ export default function ChatPage() {
           )}
         </div>
 
-        {/* Header with New Chat button */}
-        <div className="p-3 border-b border-dark-border">
+        {/* Sidebar Tabs */}
+        <div className="flex border-b border-dark-border">
           <button
-            onClick={handleNewChat}
-            disabled={!selectedAgentId}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-primary hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-colors"
+            onClick={() => setSidebarTab('chats')}
+            className={clsx(
+              'flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 text-sm font-medium transition-colors',
+              sidebarTab === 'chats'
+                ? 'text-primary border-b-2 border-primary bg-dark-hover/50'
+                : 'text-muted hover:text-white hover:bg-dark-hover/30'
+            )}
           >
-            <span className="material-symbols-outlined text-xl">add</span>
-            New Chat
+            <span className="material-symbols-outlined text-lg">chat</span>
+            Chats
+          </button>
+          <button
+            onClick={() => setSidebarTab('files')}
+            disabled={!selectedAgentId}
+            className={clsx(
+              'flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 text-sm font-medium transition-colors',
+              sidebarTab === 'files'
+                ? 'text-primary border-b-2 border-primary bg-dark-hover/50'
+                : 'text-muted hover:text-white hover:bg-dark-hover/30',
+              !selectedAgentId && 'opacity-50 cursor-not-allowed'
+            )}
+          >
+            <span className="material-symbols-outlined text-lg">folder</span>
+            Files
           </button>
         </div>
 
-        {/* Chat History List */}
-        <div className="flex-1 overflow-y-auto p-2 space-y-1">
-          <p className="px-3 py-2 text-xs font-medium text-muted uppercase tracking-wider">Recent Chats</p>
-          {sessions.length === 0 ? (
-            <p className="px-3 py-2 text-xs text-muted">No chat history yet</p>
-          ) : (
-            sessions.map((session) => {
-              const agentForSession = agents.find((a) => a.id === session.agentId);
-              return (
-                <div
-                  key={session.id}
-                  className={clsx(
-                    'group w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-left transition-colors cursor-pointer',
-                    sessionId === session.id
-                      ? 'bg-primary text-white'
-                      : 'text-muted hover:bg-dark-hover hover:text-white'
-                  )}
-                  onClick={() => handleSelectSession(session)}
-                >
-                  <span className="material-symbols-outlined text-lg flex-shrink-0">chat_bubble_outline</span>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">{session.title}</p>
-                    <p className="text-xs opacity-70">
-                      {agentForSession?.name || 'Unknown'} • {formatTimestamp(session.lastAccessedAt)}
-                    </p>
-                  </div>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setDeleteConfirmSession(session);
-                    }}
-                    className={clsx(
-                      'p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity',
-                      sessionId === session.id
-                        ? 'hover:bg-white/20 text-white'
-                        : 'hover:bg-dark-border text-muted hover:text-white'
-                    )}
-                  >
-                    <span className="material-symbols-outlined text-sm">delete</span>
-                  </button>
-                </div>
-              );
-            })
-          )}
-        </div>
+        {/* Tab Content */}
+        {sidebarTab === 'chats' ? (
+          <>
+            {/* Header with New Chat button */}
+            <div className="p-3 border-b border-dark-border">
+              <button
+                onClick={handleNewChat}
+                disabled={!selectedAgentId}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-primary hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-colors"
+              >
+                <span className="material-symbols-outlined text-xl">add</span>
+                New Chat
+              </button>
+            </div>
+
+            {/* Chat History List */}
+            <div className="flex-1 overflow-y-auto p-2 space-y-1">
+              <p className="px-3 py-2 text-xs font-medium text-muted uppercase tracking-wider">Recent Chats</p>
+              {sessions.length === 0 ? (
+                <p className="px-3 py-2 text-xs text-muted">No chat history yet</p>
+              ) : (
+                sessions.map((session) => {
+                  const agentForSession = agents.find((a) => a.id === session.agentId);
+                  return (
+                    <div
+                      key={session.id}
+                      className={clsx(
+                        'group w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-left transition-colors cursor-pointer',
+                        sessionId === session.id
+                          ? 'bg-primary text-white'
+                          : 'text-muted hover:bg-dark-hover hover:text-white'
+                      )}
+                      onClick={() => handleSelectSession(session)}
+                    >
+                      <span className="material-symbols-outlined text-lg flex-shrink-0">chat_bubble_outline</span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate">{session.title}</p>
+                        <p className="text-xs opacity-70">
+                          {agentForSession?.name || 'Unknown'} • {formatTimestamp(session.lastAccessedAt)}
+                        </p>
+                      </div>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDeleteConfirmSession(session);
+                        }}
+                        className={clsx(
+                          'p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity',
+                          sessionId === session.id
+                            ? 'hover:bg-white/20 text-white'
+                            : 'hover:bg-dark-border text-muted hover:text-white'
+                        )}
+                      >
+                        <span className="material-symbols-outlined text-sm">delete</span>
+                      </button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </>
+        ) : (
+          /* Files Tab Content */
+          <div className="flex-1 overflow-hidden">
+            {selectedAgentId ? (
+              <FileBrowser
+                agentId={selectedAgentId}
+                onFileSelect={setPreviewFile}
+                className="h-full"
+              />
+            ) : (
+              <div className="flex flex-col items-center justify-center h-full text-muted p-4 text-center">
+                <span className="material-symbols-outlined text-3xl mb-2">folder_off</span>
+                <p className="text-sm">Select an agent to browse files</p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Delete Confirmation Dialog */}
@@ -720,6 +781,14 @@ export default function ChatPage() {
           </>
         )}
       </div>
+
+      {/* File Preview Modal */}
+      <FilePreviewModal
+        isOpen={!!previewFile}
+        onClose={() => setPreviewFile(null)}
+        agentId={selectedAgentId || ''}
+        file={previewFile}
+      />
     </div>
   );
 }
