@@ -55,9 +55,12 @@ export default function ChatPage() {
   const selectedAgent = agents.find((a) => a.id === selectedAgentId);
 
   // Get configured skills for selected agent
-  const agentSkills = selectedAgent?.skillIds
-    ? skills.filter((s) => selectedAgent.skillIds.includes(s.id))
-    : [];
+  // If allowAllSkills is true, show all skills; otherwise filter by skillIds
+  const agentSkills = selectedAgent?.allowAllSkills
+    ? skills
+    : selectedAgent?.skillIds
+      ? skills.filter((s) => selectedAgent.skillIds.includes(s.id))
+      : [];
 
   // Get configured MCPs for selected agent
   const agentMCPs = selectedAgent?.mcpIds
@@ -65,7 +68,7 @@ export default function ChatPage() {
     : [];
 
   // Determine if skills and MCPs should be enabled based on agent config
-  const enableSkills = agentSkills.length > 0;
+  const enableSkills = selectedAgent?.allowAllSkills || agentSkills.length > 0;
   const enableMCP = agentMCPs.length > 0;
 
   // Load session messages

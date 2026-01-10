@@ -21,6 +21,7 @@ from claude_agent_sdk import (
 from database import db
 from config import settings, get_bedrock_model_id
 from .session_manager import session_manager
+from .workspace_manager import workspace_manager
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,117 @@ async def dangerous_command_blocker(
     return {}
 
 
+def create_file_access_permission_handler(allowed_directories: list[str]):
+    """Create a file access permission handler with allowed directories bound.
+
+    Args:
+        allowed_directories: List of directory paths that are allowed for file access
+
+    Returns:
+        Async permission handler function for can_use_tool
+    """
+    # Normalize paths (remove trailing slashes for consistent comparison)
+    normalized_dirs = [d.rstrip('/') for d in allowed_directories]
+
+    async def file_access_permission_handler(
+        tool_name: str,
+        input_data: dict,
+        context: dict
+    ) -> dict:
+        """Check if file access is allowed based on path restrictions."""
+
+        # File tools that need path checking
+        file_tools = {
+            'Read': 'file_path',
+            'Write': 'file_path',
+            'Edit': 'file_path',
+            'Glob': 'path',
+            'Grep': 'path',
+        }
+
+        if tool_name not in file_tools:
+            return {"behavior": "allow"}
+
+        # Get the path parameter name for this tool
+        path_param = file_tools[tool_name]
+        file_path = input_data.get(path_param, '')
+
+        # If no path specified, allow (tool will handle the error)
+        if not file_path:
+            return {"behavior": "allow"}
+
+        # Normalize the file path (resolve .. and symlinks conceptually)
+        # Use os.path.normpath to handle relative components
+        import os
+        normalized_path = os.path.normpath(file_path)
+
+        # Check if the path is within any allowed directory
+        is_allowed = any(
+            normalized_path.startswith(allowed_dir + '/') or normalized_path == allowed_dir
+            for allowed_dir in normalized_dirs
+        )
+
+        if not is_allowed:
+            logger.warning(f"[FILE ACCESS DENIED] Tool: {tool_name}, Path: {file_path}, Allowed: {normalized_dirs}")
+            return {
+                "behavior": "deny",
+                "message": f"File access denied: {file_path} is outside allowed directories",
+                "interrupt": False  # Don't interrupt, let agent try alternative approach
+            }
+
+        logger.debug(f"[FILE ACCESS ALLOWED] Tool: {tool_name}, Path: {file_path}")
+        return {"behavior": "allow"}
+
+    return file_access_permission_handler
+
+
+def create_skill_access_checker(allowed_skill_names: list[str]):
+    """Create a skill access checker hook with the allowed skill names bound.
+
+    Args:
+        allowed_skill_names: List of skill folder names that are allowed
+
+    Returns:
+        Async hook function that checks skill access
+    """
+    async def skill_access_checker(
+        input_data: dict,
+        tool_use_id: str | None,
+        context: Any
+    ) -> dict:
+        """Check if the requested skill is allowed for this agent."""
+        if input_data.get('tool_name') == 'Skill':
+            tool_input = input_data.get('tool_input', {})
+            requested_skill = tool_input.get('skill', '')
+
+            # Empty allowed list means no skills are allowed
+            if not allowed_skill_names:
+                logger.warning(f"[BLOCKED] Skill access denied (no skills allowed): {requested_skill}")
+                return {
+                    'hookSpecificOutput': {
+                        'hookEventName': 'PreToolUse',
+                        'permissionDecision': 'deny',
+                        'permissionDecisionReason': 'No skills are authorized for this agent'
+                    }
+                }
+
+            # Check if requested skill is in allowed list
+            if requested_skill not in allowed_skill_names:
+                logger.warning(f"[BLOCKED] Skill access denied: {requested_skill} not in {allowed_skill_names}")
+                return {
+                    'hookSpecificOutput': {
+                        'hookEventName': 'PreToolUse',
+                        'permissionDecision': 'deny',
+                        'permissionDecisionReason': f'Skill "{requested_skill}" is not authorized for this agent. Allowed skills: {", ".join(allowed_skill_names)}'
+                    }
+                }
+
+            logger.debug(f"[ALLOWED] Skill access granted: {requested_skill}")
+        return {}
+
+    return skill_access_checker
+
+
 class AgentManager:
     """Manages agent lifecycle using Claude Agent SDK.
 
@@ -137,9 +249,8 @@ class AgentManager:
                 for tool_name in ["WebFetch", "WebSearch"]:
                     allowed_tools.append(tool_name)
 
-        # Always allow Skill tool (not exposed to user)
-        if "Skill" not in allowed_tools:
-            allowed_tools.append("Skill")
+        # Note: Skill tool is now user-controllable via the Advanced Tools section
+        # If user wants to use skills, they need to enable the Skill tool explicitly
 
         # MCP servers configuration
         mcp_servers = {}
@@ -191,13 +302,100 @@ class AgentManager:
                 HookMatcher(matcher="Bash", hooks=[dangerous_command_blocker])
             )
 
+        # Skill access control - get allowed skill names for this agent
+        skill_ids = agent_config.get("skill_ids", [])
+        allow_all_skills = agent_config.get("allow_all_skills", False)
+
+        # Get allowed skill names for hook-based access control
+        allowed_skill_names = await workspace_manager.get_allowed_skill_names(
+            skill_ids=skill_ids,
+            allow_all_skills=allow_all_skills
+        )
+        logger.info(f"Agent skill access: allow_all={allow_all_skills}, skill_ids={skill_ids}, allowed_names={allowed_skill_names}")
+
+        # Add skill access checker hook (double protection with per-agent workspace)
+        if enable_skills and not allow_all_skills:
+            if "PreToolUse" not in hooks:
+                hooks["PreToolUse"] = []
+            skill_checker = create_skill_access_checker(allowed_skill_names)
+            hooks["PreToolUse"].append(
+                HookMatcher(matcher="Skill", hooks=[skill_checker])
+            )
+            logger.info(f"Skill access checker hook added for skills: {allowed_skill_names}")
+
+        # Determine working directory
+        # Use per-agent workspace for skill isolation if not allow_all_skills
+        agent_id = agent_config.get("id")
+        if enable_skills and agent_id and not allow_all_skills:
+            # Use per-agent workspace with symlinked skills
+            working_directory = str(workspace_manager.get_agent_workspace(agent_id))
+            logger.info(f"Using per-agent workspace for skill isolation: {working_directory}")
+        else:
+            # Use default workspace (all skills available)
+            working_directory = agent_config.get("working_directory") or settings.agent_workspace_dir
+            logger.info(f"Using default workspace: {working_directory}")
+
+        # Build file access permission handler
+        # Restrict file access to the working directory (and any additional allowed dirs)
+        file_access_enabled = agent_config.get("enable_file_access_control", True)
+        file_access_handler = None
+        if file_access_enabled:
+            allowed_directories = [working_directory]
+            # Add any additional allowed directories from config
+            extra_dirs = agent_config.get("allowed_directories", [])
+            if extra_dirs:
+                allowed_directories.extend(extra_dirs)
+            file_access_handler = create_file_access_permission_handler(allowed_directories)
+            logger.info(f"File access control enabled, allowed directories: {allowed_directories}")
+
+        # Build sandbox configuration (SDK built-in bash sandboxing)
+        sandbox_settings = None
+        sandbox_config = agent_config.get("sandbox", {})
+        sandbox_enabled = sandbox_config.get("enabled", settings.sandbox_enabled_default)
+
         # Determine permission mode
+        # Note: Previously we downgraded bypassPermissions to acceptEdits when sandbox enabled,
+        # but this caused MCP tools to require permission. Keeping original permission mode.
         permission_mode = agent_config.get("permission_mode", "bypassPermissions")
+
         # Get model from config and convert to Bedrock model ID if using Bedrock
         model = agent_config.get("model")
         if model and settings.claude_code_use_bedrock:
             model = get_bedrock_model_id(model)
             logger.info(f"Using Bedrock model: {model}")
+
+        if sandbox_enabled:
+            # Build network config if provided
+            network_config = {}
+            sandbox_network = sandbox_config.get("network", {})
+            if sandbox_network.get("allow_local_binding"):
+                network_config["allowLocalBinding"] = True
+            if sandbox_network.get("allow_unix_sockets"):
+                network_config["allowUnixSockets"] = sandbox_network["allow_unix_sockets"]
+            if sandbox_network.get("allow_all_unix_sockets"):
+                network_config["allowAllUnixSockets"] = True
+
+            # Get excluded commands from config or settings
+            excluded_commands = sandbox_config.get("excluded_commands", [])
+            if not excluded_commands and settings.sandbox_excluded_commands:
+                excluded_commands = [cmd.strip() for cmd in settings.sandbox_excluded_commands.split(",") if cmd.strip()]
+
+            sandbox_settings = {
+                "enabled": True,
+                "autoAllowBashIfSandboxed": sandbox_config.get(
+                    "auto_allow_bash_if_sandboxed",
+                    settings.sandbox_auto_allow_bash
+                ),
+                "excludedCommands": excluded_commands,
+                "allowUnsandboxedCommands": sandbox_config.get(
+                    "allow_unsandboxed_commands",
+                    settings.sandbox_allow_unsandboxed
+                ),
+            }
+            if network_config:
+                sandbox_settings["network"] = network_config
+
+            logger.info(f"Sandbox enabled: {sandbox_settings}")
 
         return ClaudeAgentOptions(
             system_prompt=system_prompt_config,
@@ -205,10 +403,14 @@ class AgentManager:
             mcp_servers=mcp_servers if mcp_servers else None,
             permission_mode=permission_mode,
             model=model,
-            cwd=agent_config.get("working_directory") or settings.agent_workspace_dir,
+            cwd=working_directory,
+            # Use empty setting_sources to prevent loading CLAUDE.md from parent directories
+            # Skills are loaded via Skill tool from .claude/skills/ relative to cwd, not via setting_sources
             setting_sources=['project'],
             hooks=hooks if hooks else None,
             resume=resume_session_id,  # Resume from previous session for multi-turn
+            sandbox=sandbox_settings,  # Built-in SDK sandbox for bash isolation
+            can_use_tool=file_access_handler,  # File access control
         )
 
     async def _save_message(

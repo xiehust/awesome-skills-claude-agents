@@ -51,7 +51,8 @@ export default function Modal({
     <div
       ref={overlayRef}
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
-      onClick={(e) => {
+      onMouseDown={(e) => {
+        // Only close when clicking directly on the overlay background
         if (e.target === overlayRef.current) {
           onClose();
         }
@@ -59,12 +60,14 @@ export default function Modal({
     >
       <div
         className={clsx(
-          'w-full bg-dark-card border border-dark-border rounded-xl shadow-2xl',
+          'w-full bg-dark-card border border-dark-border rounded-xl shadow-2xl flex flex-col max-h-[90vh]',
           sizeClasses[size]
         )}
+        // Stop event propagation to prevent overlay close when clicking inside modal
+        onMouseDown={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-dark-border">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-dark-border shrink-0">
           <h2 className="text-lg font-semibold text-white">{title}</h2>
           <button
             onClick={onClose}
@@ -74,8 +77,8 @@ export default function Modal({
           </button>
         </div>
 
-        {/* Content */}
-        <div className="p-6">{children}</div>
+        {/* Content - scrollable */}
+        <div className="p-6 overflow-y-auto">{children}</div>
       </div>
     </div>
   );

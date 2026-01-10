@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
 import { SearchBar, StatusBadge, Button, Modal, MultiSelect, SkeletonTable, Spinner, ToolSelector, getDefaultEnabledTools, ResizableTable, ResizableTableCell, ConfirmDialog } from '../components/common';
 import type { Agent, AgentCreateRequest, Skill, MCPServer } from '../types';
@@ -20,6 +21,7 @@ const AGENT_COLUMNS = [
 
 export default function AgentsPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [models, setModels] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -94,9 +96,10 @@ export default function AgentsPage() {
   }, []);
 
   // Helper functions to get names from IDs
-  const getSkillNames = (skillIds: string[]) => {
-    if (!skillIds || skillIds.length === 0) return '-';
-    const names = skillIds
+  const getSkillNames = (agent: Agent) => {
+    if (agent.allowAllSkills) return 'All Skills';
+    if (!agent.skillIds || agent.skillIds.length === 0) return '-';
+    const names = agent.skillIds
       .map((id) => skills.find((s) => s.id === id)?.name)
       .filter(Boolean);
     return names.length > 0 ? names.join(', ') : '-';
@@ -121,6 +124,8 @@ export default function AgentsPage() {
 
     await saveState.execute(async () => {
       const updated = await agentsService.update(selectedAgent.id, selectedAgent);
+      // Invalidate React Query cache so other pages get updated data
+      queryClient.invalidateQueries({ queryKey: ['agents'] });
       setAgents((prev) =>
         prev.map((agent) => (agent.id === updated.id ? updated : agent))
       );
@@ -146,6 +151,8 @@ export default function AgentsPage() {
         setSelectedAgent(null);
       }
       setDeleteTarget(null);
+      // Invalidate React Query cache so other pages (like ChatPage) get updated data
+      queryClient.invalidateQueries({ queryKey: ['agents'] });
     } catch (error) {
       console.error('Failed to delete agent:', error);
     } finally {
@@ -162,6 +169,8 @@ export default function AgentsPage() {
       const created = await agentsService.create(data);
       setAgents((prev) => [...prev, created]);
       setIsCreateModalOpen(false);
+      // Invalidate React Query cache so other pages get updated data
+      queryClient.invalidateQueries({ queryKey: ['agents'] });
     } catch (error) {
       console.error('Failed to create agent:', error);
     }
@@ -214,8 +223,8 @@ export default function AgentsPage() {
                       <span className="text-muted">{agent.model}</span>
                     </ResizableTableCell>
                     <ResizableTableCell>
-                      <span className="text-muted" title={getSkillNames(agent.skillIds)}>
-                        {getSkillNames(agent.skillIds)}
+                      <span className="text-muted" title={getSkillNames(agent)}>
+                        {getSkillNames(agent)}
                       </span>
                     </ResizableTableCell>
                     <ResizableTableCell>
@@ -336,21 +345,47 @@ export default function AgentsPage() {
                 }
               />
 
+              {/* Allow All Skills Toggle */}
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="block text-sm font-medium text-muted">Allow All Skills</label>
+                  <p className="text-xs text-muted mt-0.5">Grant access to all available skills</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSelectedAgent({ ...selectedAgent, allowAllSkills: !selectedAgent.allowAllSkills })
+                  }
+                  className={clsx(
+                    'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none',
+                    selectedAgent.allowAllSkills ? 'bg-primary' : 'bg-dark-border'
+                  )}
+                >
+                  <span
+                    className={clsx(
+                      'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                      selectedAgent.allowAllSkills ? 'translate-x-5' : 'translate-x-0'
+                    )}
+                  />
+                </button>
+              </div>
+
               {/* Enabled Skills */}
               <MultiSelect
                 label="Enabled Skills"
-                placeholder="Select skills..."
+                placeholder={selectedAgent.allowAllSkills ? "All skills enabled" : "Select skills..."}
                 options={skills.map((skill) => ({
                   id: skill.id,
                   name: skill.name,
                   description: skill.description,
                 }))}
-                selectedIds={selectedAgent.skillIds}
+                selectedIds={selectedAgent.allowAllSkills ? [] : selectedAgent.skillIds}
                 onChange={(skillIds) =>
                   setSelectedAgent({ ...selectedAgent, skillIds })
                 }
                 loading={loadingSkills}
                 error={skillsError || undefined}
+                disabled={selectedAgent.allowAllSkills}
               />
 
               {/* Enabled MCPs */}
@@ -466,6 +501,7 @@ function CreateAgentForm({
   const [systemPrompt, setSystemPrompt] = useState('');
   const [model, setModel] = useState(models[0] || '');
   const [skillIds, setSkillIds] = useState<string[]>([]);
+  const [allowAllSkills, setAllowAllSkills] = useState(false);
   const [mcpIds, setMcpIds] = useState<string[]>([]);
   const [allowedTools, setAllowedTools] = useState<string[]>(getDefaultEnabledTools());
 
@@ -484,7 +520,8 @@ function CreateAgentForm({
       model,
       permissionMode: 'bypassPermissions',
       systemPrompt: systemPrompt || undefined,
-      skillIds,
+      skillIds: allowAllSkills ? [] : skillIds,
+      allowAllSkills,
       mcpIds,
       allowedTools,
     };
@@ -548,20 +585,44 @@ function CreateAgentForm({
         onChange={setAllowedTools}
       />
 
+      {/* Allow All Skills Toggle */}
+      <div className="flex items-center justify-between">
+        <div>
+          <label className="block text-sm font-medium text-muted">Allow All Skills</label>
+          <p className="text-xs text-muted mt-0.5">Grant access to all available skills</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setAllowAllSkills(!allowAllSkills)}
+          className={clsx(
+            'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none',
+            allowAllSkills ? 'bg-primary' : 'bg-dark-border'
+          )}
+        >
+          <span
+            className={clsx(
+              'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+              allowAllSkills ? 'translate-x-5' : 'translate-x-0'
+            )}
+          />
+        </button>
+      </div>
+
       {/* Skills Selection */}
       <MultiSelect
         label="Skills (Optional)"
-        placeholder="Select skills..."
+        placeholder={allowAllSkills ? "All skills enabled" : "Select skills..."}
         options={skills.map((skill) => ({
           id: skill.id,
           name: skill.name,
           description: skill.description,
         }))}
-        selectedIds={skillIds}
+        selectedIds={allowAllSkills ? [] : skillIds}
         onChange={setSkillIds}
         loading={loadingSkills}
         error={skillsError || undefined}
         onOpen={onFetchSkills}
+        disabled={allowAllSkills}
       />
 
       {/* MCP Servers Selection */}
