@@ -31,6 +31,14 @@ export default function ChatPage() {
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [deleteConfirmSession, setDeleteConfirmSession] = useState<ChatSession | null>(null);
 
+  // Slash command suggestions
+  const [showCommandSuggestions, setShowCommandSuggestions] = useState(false);
+  const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
+  const slashCommands = [
+    { name: '/clear', description: 'Clear conversation context' },
+    { name: '/compact', description: 'Compact conversation history' },
+  ];
+
   // Sidebar tab state
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('chats');
   // File preview state
@@ -417,7 +425,57 @@ export default function ChatPage() {
     abortRef.current = abort;
   };
 
+  // Handle input change with slash command detection
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const value = e.target.value;
+    setInputValue(value);
+
+    // Show suggestions when input starts with '/' and has no space yet
+    if (value.startsWith('/') && !value.includes(' ')) {
+      setShowCommandSuggestions(true);
+      setSelectedCommandIndex(0);
+    } else {
+      setShowCommandSuggestions(false);
+    }
+  };
+
+  // Filter commands based on input
+  const filteredCommands = slashCommands.filter((cmd) =>
+    cmd.name.toLowerCase().startsWith(inputValue.toLowerCase())
+  );
+
+  // Handle command selection
+  const handleSelectCommand = (command: string) => {
+    setInputValue(command + ' ');
+    setShowCommandSuggestions(false);
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Handle slash command navigation
+    if (showCommandSuggestions && filteredCommands.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSelectedCommandIndex((prev) => (prev + 1) % filteredCommands.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSelectedCommandIndex((prev) => (prev - 1 + filteredCommands.length) % filteredCommands.length);
+        return;
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+        e.preventDefault();
+        handleSelectCommand(filteredCommands[selectedCommandIndex].name);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setShowCommandSuggestions(false);
+        return;
+      }
+    }
+
+    // Normal enter to send
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSendMessage();
@@ -779,11 +837,52 @@ export default function ChatPage() {
             {/* Input Area */}
             <div className="p-6 border-t border-dark-border">
               <div className="relative">
+                {/* Slash Command Suggestions */}
+                {showCommandSuggestions && filteredCommands.length > 0 && (
+                  <div className="absolute bottom-full left-0 mb-2 w-64 bg-dark-card border border-dark-border rounded-lg shadow-xl overflow-hidden z-10">
+                    <div className="px-3 py-2 border-b border-dark-border">
+                      <span className="text-xs text-muted font-medium uppercase tracking-wider">Commands</span>
+                    </div>
+                    {filteredCommands.map((cmd, index) => (
+                      <button
+                        key={cmd.name}
+                        onClick={() => handleSelectCommand(cmd.name)}
+                        className={clsx(
+                          'w-full px-3 py-2.5 flex items-start gap-3 text-left transition-colors',
+                          index === selectedCommandIndex
+                            ? 'bg-primary text-white'
+                            : 'text-white hover:bg-dark-hover'
+                        )}
+                      >
+                        <span className="material-symbols-outlined text-lg mt-0.5">terminal</span>
+                        <div>
+                          <p className="font-medium">{cmd.name}</p>
+                          <p className={clsx(
+                            'text-xs',
+                            index === selectedCommandIndex ? 'text-white/70' : 'text-muted'
+                          )}>
+                            {cmd.description}
+                          </p>
+                        </div>
+                      </button>
+                    ))}
+                    <div className="px-3 py-1.5 border-t border-dark-border bg-dark-hover/50">
+                      <span className="text-xs text-muted">
+                        <kbd className="px-1 py-0.5 bg-dark-border rounded text-xs">↑↓</kbd> navigate
+                        <span className="mx-2">·</span>
+                        <kbd className="px-1 py-0.5 bg-dark-border rounded text-xs">Tab</kbd> select
+                        <span className="mx-2">·</span>
+                        <kbd className="px-1 py-0.5 bg-dark-border rounded text-xs">Esc</kbd> close
+                      </span>
+                    </div>
+                  </div>
+                )}
+
                 <textarea
                   value={inputValue}
-                  onChange={(e) => setInputValue(e.target.value)}
+                  onChange={handleInputChange}
                   onKeyDown={handleKeyDown}
-                  placeholder="Type your message, or upload an image..."
+                  placeholder="Type your message, or use / for commands..."
                   rows={1}
                   className="w-full px-4 py-3 pr-12 bg-dark-card border border-dark-border rounded-xl text-white placeholder:text-muted resize-none focus:outline-none focus:border-primary transition-colors"
                 />

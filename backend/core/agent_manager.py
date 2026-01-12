@@ -590,31 +590,47 @@ class AgentManager:
                         message_count += 1
                         logger.debug(f"Received message {message_count}: {type(message).__name__}")
 
-                        # Capture session_id from SDK's init message (for new sessions)
-                        if isinstance(message, SystemMessage) and message.subtype == 'init':
-                            sdk_session_id = message.data.get('session_id')
-                            logger.info(f"Captured SDK session_id from init: {sdk_session_id}")
+                        # Handle SystemMessage
+                        if isinstance(message, SystemMessage):
+                            logger.info(f"SystemMessage subtype: {message.subtype}, data: {message.data}")
 
-                            # For new sessions, now we can send session_start and store session
-                            if not is_resuming:
-                                # Store client with SDK session_id
-                                self._clients[sdk_session_id] = client
+                            if message.subtype == 'init':
+                                # Capture session_id from SDK's init message (for new sessions)
+                                sdk_session_id = message.data.get('session_id')
+                                logger.info(f"Captured SDK session_id from init: {sdk_session_id}")
 
-                                yield {
-                                    "type": "session_start",
-                                    "sessionId": sdk_session_id,
-                                }
+                                # For new sessions, now we can send session_start and store session
+                                if not is_resuming:
+                                    # Store client with SDK session_id
+                                    self._clients[sdk_session_id] = client
 
-                                # Store session with SDK session_id
-                                title = user_message[:50] + "..." if len(user_message) > 50 else user_message
-                                await session_manager.store_session(sdk_session_id, agent_id, title)
+                                    yield {
+                                        "type": "session_start",
+                                        "sessionId": sdk_session_id,
+                                    }
 
-                                # Save user message to database with SDK session_id
-                                await self._save_message(
-                                    session_id=sdk_session_id,
-                                    role="user",
-                                    content=[{"type": "text", "text": user_message}]
-                                )
+                                    # Store session with SDK session_id
+                                    title = user_message[:50] + "..." if len(user_message) > 50 else user_message
+                                    await session_manager.store_session(sdk_session_id, agent_id, title)
+
+                                    # Save user message to database with SDK session_id
+                                    await self._save_message(
+                                        session_id=sdk_session_id,
+                                        role="user",
+                                        content=[{"type": "text", "text": user_message}]
+                                    )
+                            elif message.subtype == 'result':
+                                # Handle slash command results (e.g., /clear, /help, /compact)
+                                result_text = message.data.get('result', '')
+                                if result_text:
+                                    logger.info(f"Slash command result: {result_text}")
+                                    yield {
+                                        "type": "assistant",
+                                        "content": [{"type": "text", "text": result_text}],
+                                        "model": agent_config.get("model", "claude-sonnet-4-20250514")
+                                    }
+                                    # Add to assistant_content for saving
+                                    assistant_content.append({"type": "text", "text": result_text})
                             continue  # Don't format SystemMessage for output
 
                         formatted = self._format_message(message, agent_config, sdk_session_id)
@@ -645,8 +661,22 @@ class AgentManager:
                         if isinstance(message, ResultMessage):
                             logger.info(f"Conversation complete. Total messages: {message_count}")
 
+                            # Check if this was a slash command with no assistant response
+                            is_slash_command = user_message.strip().startswith('/')
+                            if is_slash_command and not assistant_content:
+                                # Provide a default response for slash commands
+                                command_name = user_message.strip().split()[0]
+                                default_response = f"Command `{command_name}` executed."
+                                logger.info(f"Slash command with no content, adding default response: {default_response}")
+                                yield {
+                                    "type": "assistant",
+                                    "content": [{"type": "text", "text": default_response}],
+                                    "model": agent_config.get("model", "claude-sonnet-4-20250514")
+                                }
+                                assistant_content.append({"type": "text", "text": default_response})
+
                             # Save assistant message
-                            if assistant_content:
+                            if assistant_content and sdk_session_id:
                                 await self._save_message(
                                     session_id=sdk_session_id,
                                     role="assistant",
