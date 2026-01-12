@@ -36,6 +36,13 @@ export default function ChatPage() {
   // File preview state
   const [previewFile, setPreviewFile] = useState<{ path: string; name: string } | null>(null);
 
+  // Resizable sidebar state
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const saved = localStorage.getItem('chatSidebarWidth');
+    return saved ? parseInt(saved, 10) : 256; // Default 256px (w-64)
+  });
+  const [isResizing, setIsResizing] = useState(false);
+
   // Fetch agents list
   const { data: agents = [], isLoading: isLoadingAgents } = useQuery({
     queryKey: ['agents'],
@@ -486,10 +493,50 @@ export default function ChatPage() {
     return date.toLocaleDateString();
   };
 
+  // Handle sidebar resizing
+  const handleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+  };
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizing) return;
+
+      const newWidth = e.clientX;
+      // Min width: 200px, Max width: 600px
+      if (newWidth >= 200 && newWidth <= 600) {
+        setSidebarWidth(newWidth);
+        localStorage.setItem('chatSidebarWidth', newWidth.toString());
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+    };
+
+    if (isResizing) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = 'ew-resize';
+      document.body.style.userSelect = 'none';
+    }
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizing]);
+
   return (
     <div className="flex h-full">
       {/* Chat History Sidebar */}
-      <div className="w-64 bg-dark-card border-r border-dark-border flex flex-col">
+      <div
+        className="bg-dark-card border-r border-dark-border flex flex-col relative"
+        style={{ width: `${sidebarWidth}px` }}
+      >
         {/* Agent Selector */}
         <div className="p-3 border-b border-dark-border">
           {isLoadingAgents ? (
@@ -627,6 +674,17 @@ export default function ChatPage() {
             )}
           </div>
         )}
+
+        {/* Resize Handle */}
+        <div
+          className={clsx(
+            'absolute top-0 right-0 w-1 h-full cursor-ew-resize hover:bg-primary/50 transition-colors group',
+            isResizing && 'bg-primary'
+          )}
+          onMouseDown={handleMouseDown}
+        >
+          <div className="absolute inset-y-0 -right-1 w-3" />
+        </div>
       </div>
 
       {/* Delete Confirmation Dialog */}

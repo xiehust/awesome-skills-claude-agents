@@ -114,6 +114,8 @@ def create_file_access_permission_handler(allowed_directories: list[str]):
         context: dict
     ) -> dict:
         """Check if file access is allowed based on path restrictions."""
+        import os
+        import re
 
         # File tools that need path checking
         file_tools = {
@@ -124,37 +126,82 @@ def create_file_access_permission_handler(allowed_directories: list[str]):
             'Grep': 'path',
         }
 
-        if tool_name not in file_tools:
+        # Check file tools
+        if tool_name in file_tools:
+            # Get the path parameter name for this tool
+            path_param = file_tools[tool_name]
+            file_path = input_data.get(path_param, '')
+
+            # If no path specified, allow (tool will handle the error)
+            if not file_path:
+                return {"behavior": "allow"}
+
+            # Normalize the file path (resolve .. and symlinks conceptually)
+            normalized_path = os.path.normpath(file_path)
+
+            # Check if the path is within any allowed directory
+            is_allowed = any(
+                normalized_path.startswith(allowed_dir + '/') or normalized_path == allowed_dir
+                for allowed_dir in normalized_dirs
+            )
+
+            if not is_allowed:
+                logger.warning(f"[FILE ACCESS DENIED] Tool: {tool_name}, Path: {file_path}, Allowed: {normalized_dirs}")
+                return {
+                    "behavior": "deny",
+                    "message": f"File access denied: {file_path} is outside allowed directories",
+                    "interrupt": False  # Don't interrupt, let agent try alternative approach
+                }
+
+            logger.debug(f"[FILE ACCESS ALLOWED] Tool: {tool_name}, Path: {file_path}")
             return {"behavior": "allow"}
 
-        # Get the path parameter name for this tool
-        path_param = file_tools[tool_name]
-        file_path = input_data.get(path_param, '')
+        # Check Bash tool for file access commands
+        if tool_name == 'Bash':
+            command = input_data.get('command', '')
 
-        # If no path specified, allow (tool will handle the error)
-        if not file_path:
+            if not command:
+                return {"behavior": "allow"}
+
+            # Extract potential file paths from bash commands
+            # Match common file access patterns
+            suspicious_patterns = [
+                r'\s+(/[^\s]+)',  # Absolute paths like /etc/passwd
+                r'(?:cat|head|tail|less|more|nano|vi|vim|emacs)\s+([^\s|>&]+)',  # Read commands
+                r'(?:echo|printf|tee)\s+.*?>\s*([^\s|>&]+)',  # Write redirects
+                r'(?:cp|mv|rm|mkdir|rmdir|touch)\s+.*?([^\s|>&]+)',  # File manipulation
+            ]
+
+            potential_paths = []
+            for pattern in suspicious_patterns:
+                matches = re.findall(pattern, command)
+                potential_paths.extend(matches)
+
+            # Check each potential path
+            for file_path in potential_paths:
+                # Skip if relative path (will be relative to cwd which is safe)
+                if not file_path.startswith('/'):
+                    continue
+
+                # Normalize and check
+                normalized_path = os.path.normpath(file_path)
+                is_allowed = any(
+                    normalized_path.startswith(allowed_dir + '/') or normalized_path == allowed_dir
+                    for allowed_dir in normalized_dirs
+                )
+
+                if not is_allowed:
+                    logger.warning(f"[BASH FILE ACCESS DENIED] Command: {command[:100]}, Path: {file_path}, Allowed: {normalized_dirs}")
+                    return {
+                        "behavior": "deny",
+                        "message": f"Bash file access denied: Command attempts to access {file_path} which is outside allowed directories ({', '.join(normalized_dirs)})",
+                        "interrupt": False
+                    }
+
+            logger.debug(f"[BASH ALLOWED] Command: {command[:100]}")
             return {"behavior": "allow"}
 
-        # Normalize the file path (resolve .. and symlinks conceptually)
-        # Use os.path.normpath to handle relative components
-        import os
-        normalized_path = os.path.normpath(file_path)
-
-        # Check if the path is within any allowed directory
-        is_allowed = any(
-            normalized_path.startswith(allowed_dir + '/') or normalized_path == allowed_dir
-            for allowed_dir in normalized_dirs
-        )
-
-        if not is_allowed:
-            logger.warning(f"[FILE ACCESS DENIED] Tool: {tool_name}, Path: {file_path}, Allowed: {normalized_dirs}")
-            return {
-                "behavior": "deny",
-                "message": f"File access denied: {file_path} is outside allowed directories",
-                "interrupt": False  # Don't interrupt, let agent try alternative approach
-            }
-
-        logger.debug(f"[FILE ACCESS ALLOWED] Tool: {tool_name}, Path: {file_path}")
+        # Allow all other tools
         return {"behavior": "allow"}
 
     return file_access_permission_handler
@@ -324,14 +371,16 @@ class AgentManager:
             logger.info(f"Skill access checker hook added for skills: {allowed_skill_names}")
 
         # Determine working directory
-        # Use per-agent workspace for skill isolation if not allow_all_skills
+        # Use per-agent workspace for skill isolation when skills are enabled
         agent_id = agent_config.get("id")
-        if enable_skills and agent_id and not allow_all_skills:
+        if enable_skills and agent_id:
             # Use per-agent workspace with symlinked skills
+            # When allow_all_skills=True, all skills will be symlinked
+            # When allow_all_skills=False, only specified skills will be symlinked
             working_directory = str(workspace_manager.get_agent_workspace(agent_id))
-            logger.info(f"Using per-agent workspace for skill isolation: {working_directory}")
+            logger.info(f"Using per-agent workspace: {working_directory} (allow_all_skills={allow_all_skills})")
         else:
-            # Use default workspace (all skills available)
+            # Use default workspace (no skills or no agent_id)
             working_directory = agent_config.get("working_directory") or settings.agent_workspace_dir
             logger.info(f"Using default workspace: {working_directory}")
 
