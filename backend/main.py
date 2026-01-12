@@ -8,7 +8,7 @@ from slowapi.errors import RateLimitExceeded
 import logging
 
 from config import settings
-from routers import agents_router, skills_router, mcp_router, chat_router, auth_router
+from routers import agents_router, skills_router, mcp_router, chat_router, auth_router, workspace_router
 from middleware.error_handler import setup_error_handlers
 from middleware.rate_limit import limiter
 
@@ -19,6 +19,14 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Suppress noisy debug logs from AWS/boto libraries
+logging.getLogger("aioboto3").setLevel(logging.WARNING)
+logging.getLogger("aiobotocore").setLevel(logging.WARNING)
+logging.getLogger("botocore").setLevel(logging.WARNING)
+logging.getLogger("boto3").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("s3transfer").setLevel(logging.WARNING)
 
 
 @asynccontextmanager
@@ -90,6 +98,7 @@ app.include_router(agents_router, prefix="/api/agents", tags=["agents"])
 app.include_router(skills_router, prefix="/api/skills", tags=["skills"])
 app.include_router(mcp_router, prefix="/api/mcp", tags=["mcp"])
 app.include_router(chat_router, prefix="/api/chat", tags=["chat"])
+app.include_router(workspace_router, prefix="/api/workspace", tags=["workspace"])
 
 
 @app.get("/health")

@@ -15,18 +15,20 @@ export interface Tool {
   id: string;
   name: string;
   description: string;
+  enabledByDefault?: boolean; // Override category default for specific tools
 }
 
 // Built-in tool categories based on agent_manager.py
 export const TOOL_CATEGORIES: ToolCategory[] = [
   {
     id: 'bash',
-    name: 'Bash Tool',
+    name: 'Bash Tools',
     description: 'Execute terminal commands',
     icon: 'terminal',
     enabledByDefault: true,
     tools: [
       { id: 'Bash', name: 'Bash', description: 'Execute shell commands in terminal' },
+      { id: 'KillShell', name: 'KillShell', description: 'Kill running background shell processes' },
     ],
   },
   {
@@ -54,6 +56,20 @@ export const TOOL_CATEGORIES: ToolCategory[] = [
       { id: 'WebSearch', name: 'WebSearch', description: 'Search the web' },
     ],
   },
+  {
+    id: 'advanced',
+    name: 'Advanced Tools',
+    description: 'Task management and agent control',
+    icon: 'settings_suggest',
+    enabledByDefault: false,
+    tools: [
+      { id: 'TodoWrite', name: 'TodoWrite', description: 'Manage task lists and track progress', enabledByDefault: true },
+      { id: 'Task', name: 'Task', description: 'Launch sub-agents for complex tasks' },
+      { id: 'TaskOutput', name: 'TaskOutput', description: 'Retrieve output from background tasks' },
+      { id: 'EnterPlanMode', name: 'EnterPlanMode', description: 'Enter planning mode for implementation' },
+      { id: 'Skill', name: 'Skill', description: 'Execute skills and slash commands', enabledByDefault: true },
+    ],
+  },
 ];
 
 // Get all tool IDs from a category
@@ -63,9 +79,27 @@ export const getCategoryToolIds = (categoryId: string): string[] => {
 };
 
 // Get all default enabled tool IDs
+// Considers both category-level and tool-level enabledByDefault flags
 export const getDefaultEnabledTools = (): string[] => {
-  return TOOL_CATEGORIES.filter((c) => c.enabledByDefault)
-    .flatMap((c) => c.tools.map((t) => t.id));
+  const enabledTools: string[] = [];
+
+  for (const category of TOOL_CATEGORIES) {
+    for (const tool of category.tools) {
+      // Tool is enabled if:
+      // 1. Category is enabled by default AND tool doesn't explicitly disable itself, OR
+      // 2. Tool explicitly enables itself (overrides category default)
+      const toolDefault = tool.enabledByDefault;
+      const shouldEnable = toolDefault !== undefined
+        ? toolDefault  // Tool has explicit setting
+        : category.enabledByDefault;  // Use category default
+
+      if (shouldEnable) {
+        enabledTools.push(tool.id);
+      }
+    }
+  }
+
+  return enabledTools;
 };
 
 interface ToolSelectorProps {

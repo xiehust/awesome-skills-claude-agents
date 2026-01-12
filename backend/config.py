@@ -80,7 +80,20 @@ class Settings(BaseSettings):
     claude_code_disable_experimental_betas: bool = True  # Disable experimental features
 
     # Agent workspace directory (default: ./workspace relative to project root)
+    # This is where main skills are stored in .claude/skills/
     agent_workspace_dir: str = str(_PROJECT_ROOT / "workspace")
+
+    # Isolated per-agent workspaces directory (OUTSIDE project tree for skill isolation)
+    # Each agent gets its own workspace with absolute symlinks to allowed skills
+    # This prevents agents from discovering skills in parent directories
+    # Default: /tmp/agent-platform-workspaces (can be changed to persistent location)
+    agent_workspaces_dir: str = "/tmp/agent-platform-workspaces"
+
+    # Built-in Sandbox Configuration (Claude Agent SDK native bash sandboxing)
+    sandbox_enabled_default: bool = True  # Default sandbox state for new agents (enabled for security)
+    sandbox_auto_allow_bash: bool = True  # Auto-approve bash when sandboxed
+    sandbox_excluded_commands: str = ""  # Comma-separated commands to bypass sandbox (e.g., "git,docker")
+    sandbox_allow_unsandboxed: bool = False  # Allow model to bypass sandbox
 
     class Config:
         env_file = ".env"

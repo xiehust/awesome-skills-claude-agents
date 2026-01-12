@@ -17,6 +17,7 @@ interface MultiSelectProps {
   error?: string;
   onOpen?: () => void;
   className?: string;
+  disabled?: boolean;
 }
 
 export default function MultiSelect({
@@ -29,6 +30,7 @@ export default function MultiSelect({
   error,
   onOpen,
   className,
+  disabled = false,
 }: MultiSelectProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -53,6 +55,7 @@ export default function MultiSelect({
   );
 
   const handleToggle = () => {
+    if (disabled) return;
     const newIsOpen = !isOpen;
     setIsOpen(newIsOpen);
     if (newIsOpen && onOpen) {
@@ -61,6 +64,7 @@ export default function MultiSelect({
   };
 
   const handleSelect = (optionId: string) => {
+    if (disabled) return;
     if (selectedIds.includes(optionId)) {
       onChange(selectedIds.filter((id) => id !== optionId));
     } else {
@@ -69,6 +73,7 @@ export default function MultiSelect({
   };
 
   const handleRemove = (optionId: string, e: React.MouseEvent) => {
+    if (disabled) return;
     e.stopPropagation();
     onChange(selectedIds.filter((id) => id !== optionId));
   };
@@ -83,9 +88,9 @@ export default function MultiSelect({
       <div
         onClick={handleToggle}
         className={clsx(
-          'w-full min-h-[42px] px-4 py-2 bg-dark-bg border border-dark-border rounded-lg cursor-pointer',
-          'focus-within:border-primary transition-colors',
-          isOpen && 'border-primary'
+          'w-full min-h-[42px] px-4 py-2 bg-dark-bg border border-dark-border rounded-lg transition-colors',
+          disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer focus-within:border-primary',
+          isOpen && !disabled && 'border-primary'
         )}
       >
         {selectedOptions.length === 0 ? (

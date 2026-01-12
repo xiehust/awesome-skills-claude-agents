@@ -8,6 +8,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+#workaround https://github.com/anthropics/claude-code/issues/15112
+export TMPDIR=/tmp/claude-tmp
+mkdir -p "$TMPDIR"
 echo "🚀 Starting AI Agent Platform..."
 
 # Check if backend dependencies are installed
@@ -50,6 +53,12 @@ init_aws_resources
 
 # Create directories
 mkdir -p .pids logs
+
+# Create isolated agent workspaces directory (outside project tree for skill isolation)
+# Default location, can be overridden via AGENT_WORKSPACES_DIR in backend/.env
+AGENT_WORKSPACES_DIR="${AGENT_WORKSPACES_DIR:-/tmp/agent-platform-workspaces}"
+mkdir -p "$AGENT_WORKSPACES_DIR"
+echo "📁 Agent workspaces: $AGENT_WORKSPACES_DIR"
 
 # Start backend
 echo ""

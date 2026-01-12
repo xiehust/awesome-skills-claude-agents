@@ -499,6 +499,171 @@ npm run test:coverage     # With coverage
 - `vite@^7.1.7` - Build tool
 - `vitest@^4.0.15` - Testing framework
 
+## Security Architecture
+
+The platform implements a **defense-in-depth security model** with four layers to ensure safe, isolated agent execution. This is critical to understand when working with agents, skills, and file operations.
+
+### Four Security Layers
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ Layer 4: Bash Command Protection                       │
+│ └─ Parse & validate file paths in bash commands        │
+├─────────────────────────────────────────────────────────┤
+│ Layer 3: File Tool Access Control                      │
+│ └─ Validate Read/Write/Edit/Glob/Grep operations       │
+├─────────────────────────────────────────────────────────┤
+│ Layer 2: Skill Access Control                          │
+│ └─ PreToolUse hook validates Skill tool invocations    │
+├─────────────────────────────────────────────────────────┤
+│ Layer 1: Workspace Isolation                           │
+│ └─ Per-agent workspace with symlinked skills           │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Layer 1: Workspace Isolation
+
+**Code Location**: `backend/core/workspace_manager.py`, `agent_manager.py:326-338`
+
+Each agent with `enable_skills=True` gets an **isolated workspace outside the project tree**:
+
+```
+Main Workspace (Skill Storage):
+/home/ubuntu/.../workspace/
+└── .claude/skills/           ← All available skills stored here
+
+Isolated Agent Workspaces:
+/tmp/agent-platform-workspaces/
+└── {agent_id}/
+    └── .claude/skills/       ← Only authorized skills symlinked here
+```
+
+**Key Implementation**:
+```python
+if enable_skills and agent_id:
+    # Use per-agent workspace (all agents with skills get isolated workspaces)
+    working_directory = str(workspace_manager.get_agent_workspace(agent_id))
+else:
+    # Use default workspace (no skills enabled)
+    working_directory = settings.agent_workspace_dir
+```
+
+- `allow_all_skills=True`: All available skills are symlinked
+- `allow_all_skills=False`: Only specified skills from `skill_ids` are symlinked
+
+### Layer 2: Skill Access Control Hook
+
+**Code Location**: `agent_manager.py:163-207`, `316-324`
+
+When `allow_all_skills=False`, a PreToolUse hook blocks unauthorized Skill tool invocations:
+
+```python
+async def skill_access_checker(input_data, tool_use_id, context):
+    if input_data.get('tool_name') == 'Skill':
+        requested_skill = input_data.get('tool_input', {}).get('skill', '')
+        if requested_skill not in allowed_skill_names:
+            return {
+                'hookSpecificOutput': {
+                    'permissionDecision': 'deny',
+                    'permissionDecisionReason': f'Skill "{requested_skill}" not authorized'
+                }
+            }
+    return {}
+```
+
+### Layer 3: File Tool Access Control
+
+**Code Location**: `agent_manager.py:111-157`, `340-351`
+
+The `can_use_tool` permission handler validates file paths for:
+- `Read`, `Write`, `Edit` → checks `file_path` parameter
+- `Glob`, `Grep` → checks `path` parameter
+
+```python
+async def file_access_permission_handler(tool_name, input_data, context):
+    # Extract and normalize file path
+    normalized_path = os.path.normpath(file_path)
+
+    # Check if path is within allowed directories
+    is_allowed = any(
+        normalized_path.startswith(allowed_dir + '/') or normalized_path == allowed_dir
+        for allowed_dir in allowed_directories
+    )
+
+    if not is_allowed:
+        return {"behavior": "deny", "message": "File access denied"}
+```
+
+**Configuration**:
+```python
+allowed_directories = [working_directory]  # Agent's workspace
+# Optional: Add extra directories from agent config
+extra_dirs = agent_config.get("allowed_directories", [])
+```
+
+### Layer 4: Bash Command Protection
+
+**Code Location**: `agent_manager.py:159-202`
+
+**Critical**: This layer prevents agents from bypassing file access control via bash commands.
+
+Without this, agents could execute:
+```bash
+bash cat /etc/passwd
+bash echo "data" > /tmp/other-agent/stolen.txt
+bash rm /important/file
+```
+
+**Implementation**: Parses bash commands using regex to extract file paths:
+```python
+if tool_name == 'Bash':
+    # Extract absolute paths from common file access commands
+    suspicious_patterns = [
+        r'\s+(/[^\s]+)',  # Absolute paths
+        r'(?:cat|head|tail|less|more)\s+([^\s|>&]+)',  # Read commands
+        r'(?:echo|printf|tee)\s+.*?>\s*([^\s|>&]+)',  # Write redirects
+        r'(?:cp|mv|rm|mkdir|rmdir|touch)\s+.*?([^\s|>&]+)',  # File ops
+    ]
+
+    # Validate each extracted absolute path
+    for file_path in potential_paths:
+        if not file_path.startswith('/'):
+            continue  # Relative paths are safe (use cwd)
+
+        if not is_allowed:
+            return {"behavior": "deny", "message": "Bash file access denied"}
+```
+
+### Agent Permissions Summary
+
+**Agents CAN**:
+- ✅ Read/write files within their workspace (`/tmp/agent-platform-workspaces/{agent_id}/`)
+- ✅ Execute bash commands with relative paths (protected by `cwd`)
+- ✅ Use authorized skills (based on `skill_ids` or `allow_all_skills`)
+
+**Agents CANNOT**:
+- 🚫 Access other agents' workspaces
+- 🚫 Access system files (`/etc/passwd`, `/var/log/`, etc.)
+- 🚫 Access main workspace where skills are stored
+- 🚫 Use unauthorized skills
+- 🚫 Bypass restrictions via bash commands with absolute paths
+
+### Monitoring Security Events
+
+Check logs for security-related events:
+```bash
+# File access denials
+tail -f logs/backend.log | grep "FILE ACCESS DENIED"
+
+# Bash command denials
+tail -f logs/backend.log | grep "BASH FILE ACCESS DENIED"
+
+# Skill access denials
+tail -f logs/backend.log | grep "BLOCKED.*Skill"
+```
+
+**IMPORTANT**: See [SECURITY.md](./SECURITY.md) for complete security documentation including known limitations, testing procedures, and best practices.
+
 ## Production Deployment
 
 The architecture is designed for AWS deployment:

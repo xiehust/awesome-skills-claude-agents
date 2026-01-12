@@ -1,3 +1,32 @@
+// Sandbox Configuration Types (Built-in SDK bash sandboxing)
+export interface SandboxNetworkConfig {
+  allowLocalBinding: boolean;
+  allowUnixSockets: string[];
+  allowAllUnixSockets: boolean;
+}
+
+export interface SandboxConfig {
+  enabled: boolean;
+  autoAllowBashIfSandboxed: boolean;
+  excludedCommands: string[];
+  allowUnsandboxedCommands: boolean;
+  network: SandboxNetworkConfig;
+}
+
+export interface SandboxNetworkConfigRequest {
+  allowLocalBinding?: boolean;
+  allowUnixSockets?: string[];
+  allowAllUnixSockets?: boolean;
+}
+
+export interface SandboxConfigRequest {
+  enabled?: boolean;
+  autoAllowBashIfSandboxed?: boolean;
+  excludedCommands?: string[];
+  allowUnsandboxedCommands?: boolean;
+  network?: SandboxNetworkConfigRequest;
+}
+
 // Agent Types
 export interface Agent {
   id: string;
@@ -8,13 +37,15 @@ export interface Agent {
   systemPrompt?: string;
   allowedTools: string[];
   skillIds: string[];
+  allowAllSkills: boolean;
   mcpIds: string[];
-  workingDirectory: string;
+  workingDirectory?: string;
   enableBashTool: boolean;
   enableFileTools: boolean;
   enableWebTools: boolean;
   enableToolLogging: boolean;
   enableSafetyChecks: boolean;
+  sandbox?: SandboxConfig;
   status: 'active' | 'inactive';
   createdAt: string;
   updatedAt: string;
@@ -27,11 +58,13 @@ export interface AgentCreateRequest {
   permissionMode?: 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
   systemPrompt?: string;
   skillIds?: string[];
+  allowAllSkills?: boolean;
   mcpIds?: string[];
   allowedTools?: string[];
   enableBashTool?: boolean;
   enableFileTools?: boolean;
   enableWebTools?: boolean;
+  sandbox?: SandboxConfigRequest;
 }
 
 export interface AgentUpdateRequest extends Partial<AgentCreateRequest> {}
@@ -283,4 +316,25 @@ export type LoadingState = 'idle' | 'loading' | 'success' | 'error';
 export interface LoadingStateInfo {
   state: LoadingState;
   error?: ErrorResponse;
+}
+
+// Workspace File Browser Types
+export interface WorkspaceFile {
+  name: string;
+  type: 'file' | 'directory';
+  size: number;
+  modified: string;
+}
+
+export interface WorkspaceListResponse {
+  files: WorkspaceFile[];
+  currentPath: string;
+  parentPath: string | null;
+}
+
+export interface WorkspaceFileContent {
+  content: string;
+  encoding: 'utf-8' | 'base64';
+  size: number;
+  mimeType: string;
 }

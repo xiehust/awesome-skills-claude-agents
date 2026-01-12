@@ -1,4 +1,5 @@
 """Agent CRUD API endpoints."""
+import logging
 from fastapi import APIRouter
 from schemas.agent import AgentCreateRequest, AgentUpdateRequest, AgentResponse
 from database import db
@@ -7,6 +8,9 @@ from core.exceptions import (
     AgentNotFoundException,
     ValidationException,
 )
+from core.workspace_manager import workspace_manager
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -64,6 +68,7 @@ async def create_agent(request: AgentCreateRequest):
         "system_prompt": request.system_prompt,
         "allowed_tools": request.allowed_tools,
         "skill_ids": request.skill_ids,
+        "allow_all_skills": request.allow_all_skills,
         "mcp_ids": request.mcp_ids,
         "working_directory": None,  # Use default from settings.agent_workspace_dir
         "enable_bash_tool": request.enable_bash_tool,
@@ -74,6 +79,19 @@ async def create_agent(request: AgentCreateRequest):
         "status": "active",
     }
     agent = await db.agents.put(agent_data)
+
+    # Build per-agent workspace with symlinks to allowed skills
+    try:
+        await workspace_manager.rebuild_agent_workspace(
+            agent_id=agent["id"],
+            skill_ids=request.skill_ids,
+            allow_all_skills=request.allow_all_skills
+        )
+        logger.info(f"Created workspace for agent {agent['id']}")
+    except Exception as e:
+        logger.error(f"Failed to create workspace for agent {agent['id']}: {e}")
+        # Don't fail agent creation if workspace creation fails
+
     return agent
 
 
@@ -89,6 +107,25 @@ async def update_agent(agent_id: str, request: AgentUpdateRequest):
 
     updates = request.model_dump(exclude_unset=True)
     agent = await db.agents.update(agent_id, updates)
+
+    # Check if skill_ids or allow_all_skills changed - if so, rebuild workspace
+    skill_ids_changed = "skill_ids" in updates
+    allow_all_changed = "allow_all_skills" in updates
+
+    if skill_ids_changed or allow_all_changed:
+        try:
+            skill_ids = agent.get("skill_ids", [])
+            allow_all_skills = agent.get("allow_all_skills", False)
+            await workspace_manager.rebuild_agent_workspace(
+                agent_id=agent_id,
+                skill_ids=skill_ids,
+                allow_all_skills=allow_all_skills
+            )
+            logger.info(f"Rebuilt workspace for agent {agent_id} after skill config change")
+        except Exception as e:
+            logger.error(f"Failed to rebuild workspace for agent {agent_id}: {e}")
+            # Don't fail agent update if workspace rebuild fails
+
     return agent
 
 
@@ -108,3 +145,11 @@ async def delete_agent(agent_id: str):
             detail=f"Agent with ID '{agent_id}' does not exist",
             suggested_action="Please check the agent ID and try again"
         )
+
+    # Clean up agent workspace
+    try:
+        await workspace_manager.delete_agent_workspace(agent_id)
+        logger.info(f"Deleted workspace for agent {agent_id}")
+    except Exception as e:
+        logger.error(f"Failed to delete workspace for agent {agent_id}: {e}")
+        # Don't fail agent deletion if workspace cleanup fails
