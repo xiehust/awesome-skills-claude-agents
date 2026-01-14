@@ -205,6 +205,12 @@ export interface AskUserQuestionContent {
   questions: AskUserQuestion[];
 }
 
+export interface TodoItem {
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed';
+  activeForm: string;
+}
+
 export type ContentBlock = TextContent | ToolUseContent | ToolResultContent | AskUserQuestionContent;
 
 export interface Message {

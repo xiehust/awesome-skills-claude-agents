@@ -11,6 +11,7 @@ export { default as ReadOnlyChips } from './ReadOnlyChips';
 export { default as ConfirmDialog } from './ConfirmDialog';
 export { default as AskUserQuestion } from './AskUserQuestion';
 export { default as MarkdownRenderer } from './MarkdownRenderer';
+export { default as TodoWriteWidget } from './TodoWriteWidget';
 export type { ChipItem } from './ReadOnlyChips';
 export type { DropdownOption } from './Dropdown';
 export { ToolSelector, TOOL_CATEGORIES, getDefaultEnabledTools, getCategoryToolIds } from './ToolSelector';

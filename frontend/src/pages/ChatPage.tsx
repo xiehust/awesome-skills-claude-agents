@@ -2,12 +2,12 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import clsx from 'clsx';
-import type { Message, ContentBlock, StreamEvent, AskUserQuestion as AskUserQuestionType, ChatSession } from '../types';
+import type { Message, ContentBlock, StreamEvent, AskUserQuestion as AskUserQuestionType, ChatSession, TodoItem } from '../types';
 import { chatService } from '../services/chat';
 import { agentsService } from '../services/agents';
 import { skillsService } from '../services/skills';
 import { mcpService } from '../services/mcp';
-import { Spinner, ReadOnlyChips, AskUserQuestion, Dropdown, MarkdownRenderer, ConfirmDialog } from '../components/common';
+import { Spinner, ReadOnlyChips, AskUserQuestion, Dropdown, MarkdownRenderer, ConfirmDialog, TodoWriteWidget } from '../components/common';
 import { FileBrowser } from '../components/workspace/FileBrowser';
 import { FilePreviewModal } from '../components/workspace/FilePreviewModal';
 
@@ -1015,6 +1015,15 @@ function ContentBlockRenderer({ block, onAnswerQuestion, pendingToolUseId, isStr
   }
 
   if (block.type === 'tool_use') {
+    // Special handling for TodoWrite
+    if (block.name === 'TodoWrite') {
+      const todos = block.input?.todos as TodoItem[] | undefined;
+      if (Array.isArray(todos) && todos.length > 0) {
+        return <TodoWriteWidget todos={todos} />;
+      }
+    }
+
+    // Generic tool use rendering
     return (
       <div className="bg-dark-card border border-dark-border rounded-lg overflow-hidden">
         <div className="flex items-center justify-between px-4 py-2 bg-dark-hover">
