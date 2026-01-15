@@ -6,6 +6,7 @@ import AgentsPage from './pages/AgentsPage';
 import SkillsPage from './pages/SkillsPage';
 import MCPPage from './pages/MCPPage';
 import DashboardPage from './pages/DashboardPage';
+import SettingsPage from './pages/SettingsPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -27,6 +28,7 @@ export default function App() {
             <Route path="agents" element={<AgentsPage />} />
             <Route path="skills" element={<SkillsPage />} />
             <Route path="mcp" element={<MCPPage />} />
+            <Route path="settings" element={<SettingsPage />} />
           </Route>
         </Routes>
       </BrowserRouter>

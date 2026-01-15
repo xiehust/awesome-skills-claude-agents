@@ -2,12 +2,20 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
-import { SearchBar, StatusBadge, Button, Modal, MultiSelect, SkeletonTable, Spinner, ToolSelector, getDefaultEnabledTools, ResizableTable, ResizableTableCell, ConfirmDialog } from '../components/common';
+import { SearchBar, StatusBadge, Button, Modal, MultiSelect, SkeletonTable, Spinner, ToolSelector, getDefaultEnabledTools, ResizableTable, ResizableTableCell, ConfirmDialog, Dropdown } from '../components/common';
+import type { DropdownOption } from '../components/common';
 import type { Agent, AgentCreateRequest, Skill, MCPServer } from '../types';
 import { agentsService } from '../services/agents';
 import { skillsService } from '../services/skills';
 import { mcpService } from '../services/mcp';
 import { useLoadingState } from '../hooks/useLoadingState';
+
+// Model options for dropdown (matching SkillsPage style)
+const MODEL_OPTIONS: DropdownOption[] = [
+  { id: 'claude-sonnet-4-5-20250929', name: 'Claude Sonnet 4.5', description: 'Best balance of speed and intelligence' },
+  { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', description: 'Fastest and most cost-effective' },
+  { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5', description: 'Most intelligent, best for complex tasks' },
+];
 
 // Agent table column configuration
 const AGENT_COLUMNS = [
@@ -320,22 +328,13 @@ export default function AgentsPage() {
               </div>
 
               {/* Base Model */}
-              <div>
-                <label className="block text-sm font-medium text-muted mb-2">Base Model</label>
-                <select
-                  value={selectedAgent.model}
-                  onChange={(e) =>
-                    setSelectedAgent({ ...selectedAgent, model: e.target.value })
-                  }
-                  className="w-full px-4 py-2 bg-dark-bg border border-dark-border rounded-lg text-white focus:outline-none focus:border-primary"
-                >
-                  {models.map((model) => (
-                    <option key={model} value={model}>
-                      {model}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <Dropdown
+                label="Base Model"
+                options={MODEL_OPTIONS}
+                selectedId={selectedAgent.model || ''}
+                onChange={(value) => setSelectedAgent({ ...selectedAgent, model: value })}
+                placeholder="Select a model..."
+              />
 
               {/* Built-in Tools */}
               <ToolSelector
@@ -564,20 +563,13 @@ function CreateAgentForm({
         />
       </div>
 
-      <div>
-        <label className="block text-sm font-medium text-muted mb-2">Base Model</label>
-        <select
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-          className="w-full px-4 py-2 bg-dark-bg border border-dark-border rounded-lg text-white focus:outline-none focus:border-primary"
-        >
-          {models.map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
-        </select>
-      </div>
+      <Dropdown
+        label="Base Model"
+        options={MODEL_OPTIONS}
+        selectedId={model}
+        onChange={setModel}
+        placeholder="Select a model..."
+      />
 
       {/* Built-in Tools */}
       <ToolSelector

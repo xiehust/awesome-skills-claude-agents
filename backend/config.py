@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     aws_region: str = "us-west-2"
     aws_access_key_id: str = ""
     aws_secret_access_key: str = ""
+    aws_session_token: str = ""  # Optional, for temporary credentials
+    aws_bearer_token_bedrock: str = ""  # Alternative auth for Bedrock (mutually exclusive with AK/SK)
 
     # DynamoDB (tables are auto-created on first startup via start.sh)
     dynamodb_agents_table: str = "awesome_skills_platform_agents"
@@ -57,6 +59,7 @@ class Settings(BaseSettings):
     dynamodb_sessions_table: str = "awesome_skills_platform_sessions"
     dynamodb_messages_table: str = "awesome_skills_platform_messages"
     dynamodb_skill_versions_table: str = "awesome_skills_platform_skill_versions"
+    dynamodb_settings_table: str = "awesome_skills_platform_settings"
 
     # JWT Authentication
     jwt_secret_key: str = "your-secret-key-change-in-production"
