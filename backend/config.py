@@ -42,7 +42,13 @@ class Settings(BaseSettings):
     port: int = 8000
 
     # CORS
-    cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+    cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000", "http://localhost:1420"]
+
+    # Database type: "dynamodb" for cloud deployment, "sqlite" for desktop app
+    database_type: str = "dynamodb"
+
+    # SQLite configuration (for desktop app)
+    sqlite_db_path: str | None = None  # If None, uses default user data directory
 
     # AWS
     aws_region: str = "us-west-2"

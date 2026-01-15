@@ -11,6 +11,7 @@ from config import settings
 from routers import agents_router, skills_router, mcp_router, chat_router, auth_router, workspace_router
 from middleware.error_handler import setup_error_handlers
 from middleware.rate_limit import limiter
+from database import initialize_database
 
 # Configure logging
 log_level = logging.DEBUG if settings.debug else logging.INFO
@@ -35,7 +36,13 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info(f"Starting {settings.app_name} v{settings.app_version}")
     logger.info(f"Debug mode: {settings.debug}")
+    logger.info(f"Database type: {settings.database_type}")
     logger.info(f"Rate limit: {settings.rate_limit_per_minute}/minute")
+
+    # Initialize database (required for SQLite, no-op for DynamoDB)
+    await initialize_database()
+    logger.info("Database initialized")
+
     yield
     # Shutdown
     logger.info("Shutting down...")

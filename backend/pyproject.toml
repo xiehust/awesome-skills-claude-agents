@@ -17,6 +17,8 @@ dependencies = [
     # AWS SDK (for production DynamoDB)
     "boto3>=1.35.0",
     "aioboto3>=13.0.0",
+    # SQLite (for desktop app)
+    "aiosqlite>=0.20.0",
     # Authentication
     "python-jose[cryptography]>=3.3.0",
     "passlib[bcrypt]>=1.7.4",

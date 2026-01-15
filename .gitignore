@@ -26,12 +26,13 @@ MANIFEST
 venv/
 ENV/
 env/
+
 .claude/
 .specify/
 # Environment variables
 .env
 .env.local
-
+.env.bak
 # IDE
 .vscode/
 .idea/
