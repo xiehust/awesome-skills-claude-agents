@@ -256,6 +256,7 @@ class DynamoDBDatabase(BaseDatabase):
         self._messages = DynamoDBMessagesTable[dict](settings.dynamodb_messages_table, self._session)
         self._users = DynamoDBTable[dict](settings.dynamodb_users_table, self._session)
         self._skill_versions = DynamoDBSkillVersionsTable[dict](settings.dynamodb_skill_versions_table, self._session)
+        self._settings = DynamoDBTable[dict](settings.dynamodb_settings_table, self._session)
 
     @property
     def agents(self) -> DynamoDBTable:
@@ -291,6 +292,11 @@ class DynamoDBDatabase(BaseDatabase):
     def skill_versions(self) -> DynamoDBSkillVersionsTable:
         """Get the skill versions table."""
         return self._skill_versions
+
+    @property
+    def settings(self) -> DynamoDBTable:
+        """Get the settings table."""
+        return self._settings
 
     async def health_check(self) -> bool:
         """Check if the database is healthy."""

@@ -8,7 +8,7 @@ from slowapi.errors import RateLimitExceeded
 import logging
 
 from config import settings
-from routers import agents_router, skills_router, mcp_router, chat_router, auth_router, workspace_router
+from routers import agents_router, skills_router, mcp_router, chat_router, auth_router, workspace_router, settings_router
 from middleware.error_handler import setup_error_handlers
 from middleware.rate_limit import limiter
 
@@ -99,6 +99,7 @@ app.include_router(skills_router, prefix="/api/skills", tags=["skills"])
 app.include_router(mcp_router, prefix="/api/mcp", tags=["mcp"])
 app.include_router(chat_router, prefix="/api/chat", tags=["chat"])
 app.include_router(workspace_router, prefix="/api/workspace", tags=["workspace"])
+app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 
 
 @app.get("/health")
