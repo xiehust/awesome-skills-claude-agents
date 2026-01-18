@@ -75,6 +75,12 @@ class BaseDatabase(ABC):
         """Get the users table."""
         pass
 
+    @property
+    @abstractmethod
+    def plugins(self) -> BaseTable:
+        """Get the plugins table."""
+        pass
+
     @abstractmethod
     async def health_check(self) -> bool:
         """Check if the database is healthy."""

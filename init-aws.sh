@@ -230,6 +230,10 @@ init_aws_resources() {
         create_dynamodb_table_if_not_exists "$DYNAMODB_SKILL_VERSIONS_TABLE"
     fi
 
+    if [ -n "$DYNAMODB_PLUGINS_TABLE" ]; then
+        create_dynamodb_table_if_not_exists "$DYNAMODB_PLUGINS_TABLE"
+    fi
+
     # Create S3 bucket if it doesn't exist
     echo ""
     echo "🪣 Checking S3 bucket..."

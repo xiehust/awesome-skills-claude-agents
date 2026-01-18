@@ -12,6 +12,7 @@ const navItems: NavItem[] = [
   { path: '/chat', label: 'Chat', icon: 'chat' },
   { path: '/agents', label: 'Agent Management', icon: 'smart_toy' },
   { path: '/skills', label: 'Skill Management', icon: 'construction' },
+  { path: '/plugins', label: 'Plugin Management', icon: 'extension' },
   { path: '/mcp', label: 'MCP Management', icon: 'dns' },
 ];
 
