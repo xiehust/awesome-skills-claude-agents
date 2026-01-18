@@ -127,6 +127,13 @@ class SessionNotFoundException(NotFoundException):
     message = "The requested session could not be found"
 
 
+class PluginNotFoundException(NotFoundException):
+    """Raised when a plugin is not found."""
+
+    code = "PLUGIN_NOT_FOUND"
+    message = "The requested plugin could not be found"
+
+
 # Conflict Errors (409)
 class ConflictException(AppException):
     """Raised when there's a state conflict."""

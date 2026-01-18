@@ -123,13 +123,27 @@ The frontend proxies `/api` requests to the backend automatically.
 **Skills Integration**:
 - Skills are enabled via Claude Code's built-in `Skill` tool
 - When `enable_skills=true`, the Skill tool is added to `allowed_tools`
-- Skills are stored in the mock database and can be uploaded as ZIP files
+- Skills are stored in DynamoDB (metadata) and S3 (files), can be uploaded as ZIP or installed via plugins
 - See [SKILLS_GUIDE.md](./SKILLS_GUIDE.md) for comprehensive documentation on creating and using Skills
 
 **MCP Server Integration**:
 - MCP servers are configured in the agent's `mcp_ids` array
-- MCP configs are loaded from mock database and converted to SDK format
+- MCP configs are loaded from database and converted to SDK format
 - Supports stdio (command-based), SSE (server-sent events), and HTTP connection types
+
+**Plugin System**:
+- Plugins are containers for skills, installed from Git repositories
+- When a plugin is installed, all its skills are auto-registered to the skills table
+- Plugins can be managed via UI (`/plugins` page) or slash commands (`/plugin install|list|update|remove`)
+- Plugin repository structure (either `plugin.yaml` or auto-detected):
+  ```
+  repo/
+  ├── plugin.yaml          # Optional: explicit metadata
+  └── skills/              # Required: skill directories
+      ├── skill-a/SKILL.md
+      └── skill-b/SKILL.md
+  ```
+- Uninstalling a plugin removes the plugin AND all associated skills
 
 ### Backend Structure
 
@@ -141,12 +155,20 @@ backend/
 │   ├── agents.py            # CRUD for agents
 │   ├── skills.py            # CRUD for skills, upload ZIP
 │   ├── mcp.py               # CRUD for MCP server configs
-│   └── chat.py              # SSE streaming endpoint (/api/chat/stream)
+│   ├── chat.py              # SSE streaming endpoint (/api/chat/stream)
+│   ├── plugins.py           # Plugin management (install from Git)
+│   ├── workspace.py         # Workspace file browser
+│   ├── settings.py          # Settings management
+│   └── auth.py              # Authentication
 ├── core/
 │   ├── agent_manager.py     # AgentManager class, ClaudeSDKClient usage
+│   ├── plugin_manager.py    # Plugin installation from Git repos
+│   ├── skill_manager.py     # Skill file management and S3 sync
+│   ├── workspace_manager.py # Per-agent workspace isolation
 │   └── session_manager.py   # Session storage and management
 ├── database/
-│   └── mock_db.py           # In-memory mock database (agents, skills, mcp_servers)
+│   ├── base.py              # Abstract database interface
+│   └── dynamodb.py          # DynamoDB implementation (production)
 ├── schemas/
 │   └── *.py                 # Pydantic models for validation
 ├── requirements.txt         # Python dependencies
@@ -204,6 +226,7 @@ The backend (Python/FastAPI) uses `snake_case` for all field names, while the fr
 | Skills | `frontend/src/services/skills.ts` | `toCamelCase()` |
 | Agents | `frontend/src/services/agents.ts` | `toCamelCase()` |
 | MCP | `frontend/src/services/mcp.ts` | `toCamelCase()` |
+| Plugins | `frontend/src/services/plugins.ts` | `toCamelCase()` |
 
 **IMPORTANT: When adding new fields to a schema:**
 
@@ -336,13 +359,16 @@ The backend uses the official **Claude Agent SDK** (`claude-agent-sdk`). Key con
    }
    ```
 
-### Database (Mock)
+### Database (DynamoDB)
 
-The backend currently uses an in-memory mock database (`database/mock_db.py`). In production, this would be replaced with AWS DynamoDB:
+The backend uses AWS DynamoDB for persistent storage (`database/dynamodb.py`). Tables are auto-created on first startup via `init-aws.sh`:
 
 - **agents**: Agent configurations (name, model, allowed_tools, skill_ids, mcp_ids)
 - **skills**: Skill metadata (name, description, s3_location)
 - **mcp_servers**: MCP server configs (connection_type, config dict)
+- **plugins**: Plugin metadata (git_url, git_ref, skill_ids)
+- **sessions**: Chat session data
+- **messages**: Chat message history (with TTL auto-expiration)
 
 ### SSE Streaming Format
 
@@ -426,10 +452,27 @@ These environment variables are automatically passed to Claude Code CLI when cre
 - `PUT /api/mcp/{id}` - Update MCP config
 - `DELETE /api/mcp/{id}` - Delete MCP config
 
+### Plugins
+- `GET /api/plugins` - List installed plugins
+- `GET /api/plugins/{id}` - Get plugin by ID
+- `POST /api/plugins/install` - Install plugin from Git URL
+- `POST /api/plugins/{id}/update` - Update plugin (git pull)
+- `DELETE /api/plugins/{id}` - Uninstall plugin and its skills
+
 ### Chat
 - `POST /api/chat/stream` - Stream chat (SSE)
   - Request: `{"agent_id": "...", "message": "...", "session_id": "...", "enable_skills": bool, "enable_mcp": bool}`
   - Response: SSE stream of JSON events
+
+### Frontend Slash Commands
+
+The chat interface supports slash commands (intercepted in frontend, not sent to agent):
+- `/clear` - Clear conversation context
+- `/compact` - Compact conversation history
+- `/plugin install <git-url>` - Install plugin from Git repository
+- `/plugin list` - List installed plugins
+- `/plugin update <plugin-id>` - Update a plugin
+- `/plugin remove <plugin-id>` - Uninstall a plugin
 
 ## Testing
 

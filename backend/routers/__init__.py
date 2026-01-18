@@ -6,6 +6,7 @@ from .chat import router as chat_router
 from .auth import router as auth_router
 from .workspace import router as workspace_router
 from .settings import router as settings_router
+from .plugins import router as plugins_router
 
 __all__ = [
     "agents_router",
@@ -15,4 +16,5 @@ __all__ = [
     "auth_router",
     "workspace_router",
     "settings_router",
+    "plugins_router",
 ]

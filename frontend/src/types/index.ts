@@ -149,6 +149,32 @@ export interface MCPServerCreateRequest {
 
 export interface MCPServerUpdateRequest extends Partial<MCPServerCreateRequest> {}
 
+// Plugin Types
+export interface Plugin {
+  id: string;
+  name: string;
+  description: string;
+  gitUrl: string;
+  gitRef: string;
+  version: string;
+  author: string;
+  createdAt: string;
+  updatedAt: string;
+  skillIds: string[];
+  status: 'installed' | 'updating' | 'error';
+  errorMessage?: string;
+  marketplace?: string;  // Marketplace name if from a marketplace repo
+}
+
+export interface PluginInstallRequest {
+  gitUrl: string;
+  gitRef?: string;
+}
+
+export interface PluginUpdateRequest {
+  gitRef?: string;
+}
+
 // Chat/Message Types
 export interface ChatSession {
   id: string;

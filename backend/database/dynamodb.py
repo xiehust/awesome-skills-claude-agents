@@ -257,6 +257,7 @@ class DynamoDBDatabase(BaseDatabase):
         self._users = DynamoDBTable[dict](settings.dynamodb_users_table, self._session)
         self._skill_versions = DynamoDBSkillVersionsTable[dict](settings.dynamodb_skill_versions_table, self._session)
         self._settings = DynamoDBTable[dict](settings.dynamodb_settings_table, self._session)
+        self._plugins = DynamoDBTable[dict](settings.dynamodb_plugins_table, self._session)
 
     @property
     def agents(self) -> DynamoDBTable:
@@ -297,6 +298,11 @@ class DynamoDBDatabase(BaseDatabase):
     def settings(self) -> DynamoDBTable:
         """Get the settings table."""
         return self._settings
+
+    @property
+    def plugins(self) -> DynamoDBTable:
+        """Get the plugins table."""
+        return self._plugins
 
     async def health_check(self) -> bool:
         """Check if the database is healthy."""

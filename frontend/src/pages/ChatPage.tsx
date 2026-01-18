@@ -7,6 +7,7 @@ import { chatService } from '../services/chat';
 import { agentsService } from '../services/agents';
 import { skillsService } from '../services/skills';
 import { mcpService } from '../services/mcp';
+import { pluginsService } from '../services/plugins';
 import { Spinner, ReadOnlyChips, AskUserQuestion, Dropdown, MarkdownRenderer, ConfirmDialog, TodoWriteWidget } from '../components/common';
 import { FileBrowser } from '../components/workspace/FileBrowser';
 import { FilePreviewModal } from '../components/workspace/FilePreviewModal';
@@ -37,6 +38,7 @@ export default function ChatPage() {
   const slashCommands = [
     { name: '/clear', description: 'Clear conversation context' },
     { name: '/compact', description: 'Compact conversation history' },
+    { name: '/plugin', description: 'Manage plugins (install, list, update, remove)' },
   ];
 
   // Sidebar tab state
@@ -212,8 +214,113 @@ export default function ChatPage() {
     scrollToBottom();
   }, [messages]);
 
+  // Handle /plugin command
+  const handlePluginCommand = async (message: string) => {
+    // Add user message to chat
+    const userMsg: Message = {
+      id: Date.now().toString(),
+      role: 'user',
+      content: [{ type: 'text', text: message }],
+      timestamp: new Date().toISOString(),
+    };
+    setMessages((prev) => [...prev, userMsg]);
+
+    // Parse command: /plugin <action> [args]
+    const match = message.match(/^\/plugin\s+(\w+)(?:\s+(.*))?$/);
+    if (!match) {
+      const helpMsg: Message = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: [{ type: 'text', text: '**Plugin Commands:**\n- `/plugin list` - List installed plugins\n- `/plugin install <git-url>` - Install from Git repository\n- `/plugin update <plugin-id>` - Update a plugin\n- `/plugin remove <plugin-id>` - Uninstall a plugin' }],
+        timestamp: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, helpMsg]);
+      return;
+    }
+
+    const [, action, args] = match;
+    let responseText = '';
+
+    try {
+      switch (action) {
+        case 'install': {
+          if (!args) {
+            responseText = 'Please provide a Git URL: `/plugin install <git-url>`';
+            break;
+          }
+          responseText = `Installing plugin from ${args}...`;
+          const installMsg: Message = {
+            id: (Date.now() + 1).toString(),
+            role: 'assistant',
+            content: [{ type: 'text', text: responseText }],
+            timestamp: new Date().toISOString(),
+          };
+          setMessages((prev) => [...prev, installMsg]);
+
+          const plugin = await pluginsService.install({ gitUrl: args.trim() });
+          responseText = `Plugin **${plugin.name}** (v${plugin.version}) installed successfully with ${plugin.skillIds.length} skill(s).`;
+          setMessages((prev) => prev.map(m =>
+            m.id === installMsg.id
+              ? { ...m, content: [{ type: 'text', text: responseText }] }
+              : m
+          ));
+          return;
+        }
+        case 'list': {
+          const plugins = await pluginsService.list();
+          if (plugins.length === 0) {
+            responseText = 'No plugins installed.';
+          } else {
+            responseText = '**Installed Plugins:**\n' + plugins.map(p =>
+              `- **${p.name}** (v${p.version}) - ${p.description}\n  ID: \`${p.id}\` | Skills: ${p.skillIds.length} | Status: ${p.status}`
+            ).join('\n');
+          }
+          break;
+        }
+        case 'update': {
+          if (!args) {
+            responseText = 'Please provide a plugin ID: `/plugin update <plugin-id>`';
+            break;
+          }
+          const updated = await pluginsService.update(args.trim());
+          responseText = `Plugin **${updated.name}** updated to v${updated.version}.`;
+          break;
+        }
+        case 'remove': {
+          if (!args) {
+            responseText = 'Please provide a plugin ID: `/plugin remove <plugin-id>`';
+            break;
+          }
+          await pluginsService.uninstall(args.trim());
+          responseText = `Plugin uninstalled successfully.`;
+          break;
+        }
+        default:
+          responseText = `Unknown action: ${action}. Use \`/plugin\` for help.`;
+      }
+    } catch (error) {
+      responseText = `Error: ${error instanceof Error ? error.message : 'Unknown error'}`;
+    }
+
+    const responseMsg: Message = {
+      id: (Date.now() + 1).toString(),
+      role: 'assistant',
+      content: [{ type: 'text', text: responseText }],
+      timestamp: new Date().toISOString(),
+    };
+    setMessages((prev) => [...prev, responseMsg]);
+  };
+
   const handleSendMessage = async () => {
     if (!inputValue.trim() || isStreaming || !selectedAgentId) return;
+
+    // Intercept /plugin command
+    const trimmedInput = inputValue.trim();
+    if (trimmedInput.startsWith('/plugin')) {
+      await handlePluginCommand(trimmedInput);
+      setInputValue('');
+      return;
+    }
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -536,8 +643,11 @@ export default function ChatPage() {
   };
 
   // Format timestamp for display
-  const formatTimestamp = (timestamp: string) => {
+  const formatTimestamp = (timestamp: string | undefined) => {
+    if (!timestamp) return '';
     const date = new Date(timestamp);
+    if (isNaN(date.getTime())) return '';
+
     const now = new Date();
     const diffMs = now.getTime() - date.getTime();
     const diffMins = Math.floor(diffMs / 60000);
@@ -975,14 +1085,16 @@ function MessageBubble({ message, onAnswerQuestion, pendingToolUseId, isStreamin
       </div>
 
       <div className={clsx('flex-1 max-w-3xl', isUser && 'text-right')}>
-        <div className="flex items-center gap-2 mb-1">
+        <div className={clsx('flex items-center gap-2 mb-1', isUser && 'justify-end')}> 
           <span className="font-medium text-white">{isUser ? 'User' : 'AI Agent'}</span>
-          <span className="text-xs text-muted">
-            {new Date(message.timestamp).toLocaleTimeString([], {
-              hour: '2-digit',
-              minute: '2-digit',
-            })}
-          </span>
+          {message.timestamp && !isNaN(new Date(message.timestamp).getTime()) && (
+            <span className="text-xs text-muted">
+              {new Date(message.timestamp).toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
+            </span>
+          )}
         </div>
 
         <div className={clsx('space-y-3', isUser && 'inline-block text-left')}>
