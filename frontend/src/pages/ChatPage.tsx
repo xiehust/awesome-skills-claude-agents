@@ -53,6 +53,12 @@ export default function ChatPage() {
   });
   const [isResizing, setIsResizing] = useState(false);
 
+  // Chat sidebar visibility state
+  const [chatSidebarVisible, setChatSidebarVisible] = useState(() => {
+    const saved = localStorage.getItem('chatSidebarVisible');
+    return saved ? JSON.parse(saved) : false; // Default: hidden
+  });
+
   // Fetch agents list
   const { data: agents = [], isLoading: isLoadingAgents } = useQuery({
     queryKey: ['agents'],
@@ -196,6 +202,42 @@ export default function ChatPage() {
     }
   }, [agents, searchParams, selectedAgentId, setSearchParams]);
 
+  // Persist chat sidebar visibility to localStorage
+  useEffect(() => {
+    localStorage.setItem('chatSidebarVisible', JSON.stringify(chatSidebarVisible));
+  }, [chatSidebarVisible]);
+
+  // Load last-used agent on mount
+  useEffect(() => {
+    if (agents.length > 0 && !selectedAgentId) {
+      const lastUsedId = localStorage.getItem('lastUsedAgentId');
+      if (lastUsedId) {
+        const agent = agents.find((a) => a.id === lastUsedId);
+        if (agent) {
+          // Load agent with welcome message
+          setSelectedAgentId(lastUsedId);
+          setMessages([
+            {
+              id: '1',
+              role: 'assistant',
+              content: [
+                {
+                  type: 'text',
+                  text: `Hello, I'm ${agent.name}. ${agent.description || 'How can I assist you today?'}`,
+                },
+              ],
+              timestamp: new Date().toISOString(),
+            },
+          ]);
+          setSessionId(undefined);
+        } else {
+          // Clear invalid agent ID
+          localStorage.removeItem('lastUsedAgentId');
+        }
+      }
+    }
+  }, [agents, selectedAgentId]);
+
   // Refetch sessions when conversation completes
   useEffect(() => {
     if (sessionId && !isStreaming) {
@@ -204,6 +246,7 @@ export default function ChatPage() {
   }, [sessionId, isStreaming, refetchSessions]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<(() => void) | null>(null);
 
   const scrollToBottom = () => {
@@ -625,6 +668,8 @@ export default function ChatPage() {
     if (!agent) return;
 
     setSelectedAgentId(agentId);
+    localStorage.setItem('lastUsedAgentId', agentId); // Save to localStorage
+
     // Reset chat state when switching agents
     setMessages([
       {
@@ -702,8 +747,13 @@ export default function ChatPage() {
     <div className="flex h-full">
       {/* Chat History Sidebar */}
       <div
-        className="bg-dark-card border-r border-dark-border flex flex-col relative"
-        style={{ width: `${sidebarWidth}px` }}
+        className={clsx(
+          'bg-dark-card border-r border-dark-border flex flex-col transition-all duration-300 ease-in-out',
+          chatSidebarVisible
+            ? 'opacity-100 translate-x-0'
+            : 'opacity-0 -translate-x-full absolute pointer-events-none'
+        )}
+        style={{ width: chatSidebarVisible ? `${sidebarWidth}px` : '0px' }}
       >
         {/* Agent Selector */}
         <div className="p-3 border-b border-dark-border">
@@ -871,16 +921,47 @@ export default function ChatPage() {
       <div className="flex-1 flex flex-col">
         {/* Chat Header */}
         <div className="h-16 px-6 flex items-center justify-between border-b border-dark-border">
-          <div className="flex items-center gap-3">
-            <span className="material-symbols-outlined text-primary">smart_toy</span>
-            <div>
-              <h1 className="font-semibold text-white">
-                {selectedAgent ? selectedAgent.name : 'Select an Agent'}
-              </h1>
-              {selectedAgent && (
-                <p className="text-xs text-muted">{selectedAgent.description || 'AI Assistant'}</p>
-              )}
+          <div className="flex items-center gap-2 flex-1">
+            {/* Hamburger menu toggle */}
+            <button
+              onClick={() => setChatSidebarVisible(!chatSidebarVisible)}
+              className="p-2 rounded-lg text-muted hover:bg-dark-hover hover:text-white transition-colors"
+              title={chatSidebarVisible ? 'Hide chat history' : 'Show chat history'}
+            >
+              <span className="material-symbols-outlined">
+                {chatSidebarVisible ? 'menu_open' : 'menu'}
+              </span>
+            </button>
+
+            {/* Agent display */}
+            <div className="flex items-center gap-2">
+              <span className="material-symbols-outlined text-primary">smart_toy</span>
+              <div>
+                <h1 className="font-semibold text-white text-sm">
+                  {selectedAgent ? selectedAgent.name : 'Select an Agent'}
+                </h1>
+                {selectedAgent && selectedAgent.description && (
+                  <p className="text-xs text-muted truncate max-w-xs">{selectedAgent.description}</p>
+                )}
+              </div>
             </div>
+
+            {/* Agent selector dropdown */}
+            {agents.length > 0 && (
+              <div className="ml-2">
+                <Dropdown
+                  label=""
+                  placeholder="Switch agent..."
+                  options={agents.map((agent) => ({
+                    id: agent.id,
+                    name: agent.name,
+                    description: agent.description,
+                  }))}
+                  selectedId={selectedAgentId}
+                  onChange={handleSelectAgent}
+                />
+              </div>
+            )}
           </div>
           <div className="flex items-center gap-2">
             {selectedAgent && (
@@ -946,10 +1027,11 @@ export default function ChatPage() {
 
             {/* Input Area */}
             <div className="p-6 border-t border-dark-border">
-              <div className="relative">
+              {/* Centered container with max-width */}
+              <div className="max-w-4xl mx-auto">
                 {/* Slash Command Suggestions */}
                 {showCommandSuggestions && filteredCommands.length > 0 && (
-                  <div className="absolute bottom-full left-0 mb-2 w-64 bg-dark-card border border-dark-border rounded-lg shadow-xl overflow-hidden z-10">
+                  <div className="mb-2 bg-dark-card border border-dark-border rounded-lg shadow-xl overflow-hidden">
                     <div className="px-3 py-2 border-b border-dark-border">
                       <span className="text-xs text-muted font-medium uppercase tracking-wider">Commands</span>
                     </div>
@@ -988,61 +1070,95 @@ export default function ChatPage() {
                   </div>
                 )}
 
-                <textarea
-                  value={inputValue}
-                  onChange={handleInputChange}
-                  onKeyDown={handleKeyDown}
-                  placeholder="Type your message, or use / for commands..."
-                  rows={1}
-                  className="w-full px-4 py-3 pr-12 bg-dark-card border border-dark-border rounded-xl text-white placeholder:text-muted resize-none focus:outline-none focus:border-primary transition-colors"
-                />
-                <button
-                  onClick={isStreaming ? handleStop : handleSendMessage}
-                  disabled={!isStreaming && (!inputValue.trim() || !selectedAgentId)}
-                  className={`absolute right-3 top-1/2 -translate-y-1/2 p-2 ${
-                    isStreaming
-                      ? 'bg-red-500 hover:bg-red-600'
-                      : 'bg-primary hover:bg-primary-hover'
-                  } disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center justify-center min-w-[36px] min-h-[36px]`}
-                  title={isStreaming ? 'Stop generation' : 'Send message'}
-                >
-                  {isStreaming ? (
-                    <span className="material-symbols-outlined text-white">stop</span>
-                  ) : (
-                    <span className="material-symbols-outlined text-white">arrow_upward</span>
-                  )}
-                </button>
-              </div>
+                {/* Input row: attach button + input + send button */}
+                <div className="flex items-end gap-3">
+                  {/* Attach button (left) */}
+                  <button
+                    className="p-3 mb-1 rounded-lg text-muted hover:bg-dark-hover hover:text-white transition-colors"
+                    title="Attach files"
+                  >
+                    <span className="material-symbols-outlined">attach_file</span>
+                  </button>
 
-              {/* Agent Config Display */}
-              <div className="flex items-center gap-6 mt-4">
-                <button className="p-2 rounded-lg text-muted hover:bg-dark-hover hover:text-white transition-colors">
-                  <span className="material-symbols-outlined">attach_file</span>
-                </button>
+                  {/* Textarea with circular send button */}
+                  <div className="relative flex-1">
+                    <textarea
+                      ref={textareaRef}
+                      value={inputValue}
+                      onChange={handleInputChange}
+                      onKeyDown={handleKeyDown}
+                      placeholder="Ask anything..."
+                      rows={3}
+                      className="w-full px-4 py-3 pr-14 bg-dark-card border border-dark-border rounded-2xl text-white placeholder:text-muted resize-none focus:outline-none focus:border-primary transition-colors max-h-32 overflow-y-auto"
+                    />
 
-                <ReadOnlyChips
-                  label="Skills"
-                  icon="extension"
-                  items={agentSkills.map((s) => ({
-                    id: s.id,
-                    name: s.name,
-                    description: s.description,
-                  }))}
-                  emptyText="No skills"
-                  loading={isLoadingSkills}
-                />
+                    {/* Circular send/stop button (bottom-right inside textarea) */}
+                    <button
+                      onClick={isStreaming ? handleStop : handleSendMessage}
+                      disabled={!isStreaming && (!inputValue.trim() || !selectedAgentId)}
+                      className={clsx(
+                        'absolute right-2 bottom-2 w-10 h-10 rounded-full flex items-center justify-center transition-all',
+                        isStreaming
+                          ? 'bg-red-500 hover:bg-red-600'
+                          : 'bg-primary hover:bg-primary-hover',
+                        'disabled:opacity-50 disabled:cursor-not-allowed'
+                      )}
+                      title={isStreaming ? 'Stop generation' : 'Send message'}
+                    >
+                      {isStreaming ? (
+                        <span className="material-symbols-outlined text-white text-xl">stop</span>
+                      ) : (
+                        <span className="material-symbols-outlined text-white text-xl">arrow_upward</span>
+                      )}
+                    </button>
+                  </div>
+                </div>
 
-                <ReadOnlyChips
-                  label="MCPs"
-                  icon="hub"
-                  items={agentMCPs.map((m) => ({
-                    id: m.id,
-                    name: m.name,
-                    description: m.description,
-                  }))}
-                  emptyText="No MCPs"
-                  loading={isLoadingMCPs}
-                />
+                {/* Skills/MCPs chips below input */}
+                <div className="flex items-center gap-6 mt-3 text-xs">
+                  {/* Skills */}
+                  <div className="flex items-center gap-2">
+                    <span className="material-symbols-outlined text-muted text-sm">extension</span>
+                    <span className="text-muted uppercase font-medium">Skills</span>
+                    {isLoadingSkills ? (
+                      <span className="text-muted">Loading...</span>
+                    ) : agentSkills.length > 0 ? (
+                      <div className="flex gap-1 flex-wrap">
+                        {agentSkills.map((skill) => (
+                          <span key={skill.id} className="px-2 py-1 bg-dark-hover text-white rounded">
+                            {skill.name}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-muted">None</span>
+                    )}
+                  </div>
+
+                  {/* MCPs */}
+                  <div className="flex items-center gap-2">
+                    <span className="material-symbols-outlined text-muted text-sm">hub</span>
+                    <span className="text-muted uppercase font-medium">MCPs</span>
+                    {isLoadingMCPs ? (
+                      <span className="text-muted">Loading...</span>
+                    ) : agentMCPs.length > 0 ? (
+                      <div className="flex gap-1 flex-wrap">
+                        {agentMCPs.map((mcp) => (
+                          <span key={mcp.id} className="px-2 py-1 bg-dark-hover text-white rounded">
+                            {mcp.name}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-muted">None</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Footer text */}
+                <div className="text-center text-xs text-muted mt-3">
+                  Type / for commands
+                </div>
               </div>
             </div>
           </>
