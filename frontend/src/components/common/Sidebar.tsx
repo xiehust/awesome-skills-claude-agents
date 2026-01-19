@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import clsx from 'clsx';
 
@@ -23,6 +24,7 @@ const bottomNavItems: NavItem[] = [
 
 export default function Sidebar() {
   const location = useLocation();
+  const [hoveredItem, setHoveredItem] = useState<string | null>(null);
 
   const isActive = (path: string) => {
     if (path === '/') {
@@ -32,55 +34,73 @@ export default function Sidebar() {
   };
 
   return (
-    <aside className="w-64 bg-dark-bg border-r border-dark-border flex flex-col">
+    <aside className="w-16 bg-dark-bg border-r border-dark-border flex flex-col">
       {/* Logo */}
-      <div className="h-16 flex items-center px-4 border-b border-dark-border">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center">
-            <span className="material-symbols-outlined text-primary">smart_toy</span>
-          </div>
-          <div>
-            <h1 className="font-semibold text-white">Agent Skill Platform</h1>
-            <p className="text-xs text-muted">Workspace</p>
-          </div>
+      <div className="h-16 flex items-center justify-center border-b border-dark-border">
+        <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center">
+          <span className="material-symbols-outlined text-primary">smart_toy</span>
         </div>
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 py-4 px-3 space-y-1">
+      <nav className="flex-1 py-4 px-2 space-y-1">
         {navItems.map((item) => (
-          <NavLink
+          <div
             key={item.path}
-            to={item.path}
-            className={clsx(
-              'flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors',
-              isActive(item.path)
-                ? 'bg-primary text-white'
-                : 'text-muted hover:bg-dark-hover hover:text-white'
-            )}
+            className="relative"
+            onMouseEnter={() => setHoveredItem(item.path)}
+            onMouseLeave={() => setHoveredItem(null)}
           >
-            <span className="material-symbols-outlined text-xl">{item.icon}</span>
-            <span className="text-sm font-medium">{item.label}</span>
-          </NavLink>
+            <NavLink
+              to={item.path}
+              className={clsx(
+                'flex items-center justify-center p-3 rounded-lg transition-colors',
+                isActive(item.path)
+                  ? 'bg-primary text-white'
+                  : 'text-muted hover:bg-dark-hover hover:text-white'
+              )}
+            >
+              <span className="material-symbols-outlined text-xl">{item.icon}</span>
+            </NavLink>
+
+            {/* Tooltip */}
+            {hoveredItem === item.path && (
+              <div className="absolute left-full ml-2 px-3 py-2 bg-dark-card border border-dark-border rounded-lg shadow-xl whitespace-nowrap z-50 pointer-events-none">
+                <span className="text-sm text-white">{item.label}</span>
+              </div>
+            )}
+          </div>
         ))}
       </nav>
 
       {/* Bottom navigation */}
-      <div className="py-4 px-3 border-t border-dark-border space-y-1">
+      <div className="py-4 px-2 border-t border-dark-border space-y-1">
         {bottomNavItems.map((item) => (
-          <NavLink
+          <div
             key={item.path}
-            to={item.path}
-            className={clsx(
-              'flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors',
-              isActive(item.path)
-                ? 'bg-primary text-white'
-                : 'text-muted hover:bg-dark-hover hover:text-white'
-            )}
+            className="relative"
+            onMouseEnter={() => setHoveredItem(item.path)}
+            onMouseLeave={() => setHoveredItem(null)}
           >
-            <span className="material-symbols-outlined text-xl">{item.icon}</span>
-            <span className="text-sm font-medium">{item.label}</span>
-          </NavLink>
+            <NavLink
+              to={item.path}
+              className={clsx(
+                'flex items-center justify-center p-3 rounded-lg transition-colors',
+                isActive(item.path)
+                  ? 'bg-primary text-white'
+                  : 'text-muted hover:bg-dark-hover hover:text-white'
+              )}
+            >
+              <span className="material-symbols-outlined text-xl">{item.icon}</span>
+            </NavLink>
+
+            {/* Tooltip */}
+            {hoveredItem === item.path && (
+              <div className="absolute left-full ml-2 px-3 py-2 bg-dark-card border border-dark-border rounded-lg shadow-xl whitespace-nowrap z-50 pointer-events-none">
+                <span className="text-sm text-white">{item.label}</span>
+              </div>
+            )}
+          </div>
         ))}
       </div>
     </aside>
