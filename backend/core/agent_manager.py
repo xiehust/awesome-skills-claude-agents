@@ -458,17 +458,16 @@ class AgentManager:
             # When allow_all_skills=True, all skills will be symlinked
             # When allow_all_skills=False, only specified skills will be symlinked
             agent_workspace_path = workspace_manager.get_agent_workspace(agent_id, tenant_id=tenant_id or "")
-            # Check if workspace exists; rebuild if missing (e.g. after deletion or data loss)
+            # Always rebuild workspace skills to ensure symlinks stay in sync
+            # with skill content changes (e.g. draft/ subdirs, new versions)
             lock = self._workspace_locks.setdefault(agent_id, asyncio.Lock())
             async with lock:
-                if not agent_workspace_path.exists():
-                    logger.warning(f"Agent workspace missing, rebuilding: {agent_workspace_path}")
-                    await workspace_manager.rebuild_agent_workspace(
-                        agent_id=agent_id,
-                        skill_ids=skill_ids,
-                        allow_all_skills=allow_all_skills,
-                        tenant_id=tenant_id or "",
-                    )
+                await workspace_manager.rebuild_agent_workspace(
+                    agent_id=agent_id,
+                    skill_ids=skill_ids,
+                    allow_all_skills=allow_all_skills,
+                    tenant_id=tenant_id or "",
+                )
             working_directory = str(agent_workspace_path)
             logger.info(f"Using per-agent workspace: {working_directory} (allow_all_skills={allow_all_skills})")
         else:
@@ -545,9 +544,12 @@ class AgentManager:
             permission_mode=permission_mode,
             model=model,
             cwd=working_directory,
-            # Use empty setting_sources to prevent loading CLAUDE.md from parent directories
-            # Skills are loaded via Skill tool from .claude/skills/ relative to cwd, not via setting_sources
+            # Only load project-level settings (workspace .claude/); prevents user-level
+            # CLAUDE.md and skills from ~/.claude/ leaking into agent sessions
             setting_sources=['project'],
+            # Prevent user-installed plugins from injecting their skills into agent sessions;
+            # agents should only see skills symlinked into their workspace
+            plugins=[],
             hooks=hooks if hooks else None,
             resume=resume_session_id,  # Resume from previous session for multi-turn
             sandbox=sandbox_settings,  # Built-in SDK sandbox for bash isolation
