@@ -265,13 +265,91 @@ class AgentManager:
     def __init__(self):
         self._clients: dict[str, ClaudeSDKClient] = {}
         self._workspace_locks: dict[str, asyncio.Lock] = {}
+        self._env_lock = asyncio.Lock()
+
+    async def _get_tenant_environment(self, tenant_id: str) -> dict[str, str]:
+        """Get environment variables for a tenant's API key configuration.
+
+        Returns dict of env vars to set for the Claude SDK subprocess.
+        Falls back to global settings if tenant has no API key configured.
+        """
+        from .key_manager import get_key_manager
+
+        tenant = await db.tenants.get(tenant_id)
+        if not tenant:
+            logger.warning(f"Tenant {tenant_id} not found, using global API key")
+            return {}
+
+        env = {}
+
+        # Decrypt tenant's API key if available
+        encrypted_key = tenant.get("encrypted_anthropic_api_key")
+        if encrypted_key:
+            try:
+                key_manager = get_key_manager()
+                api_key = await key_manager.get_tenant_api_key(tenant_id, encrypted_key)
+                env["ANTHROPIC_API_KEY"] = api_key
+            except Exception as e:
+                logger.error(f"Failed to decrypt API key for tenant {tenant_id}: {e}")
+                # Fall through to use global key
+
+        # Tenant-specific base URL
+        base_url = tenant.get("anthropic_base_url")
+        if base_url:
+            env["ANTHROPIC_BASE_URL"] = base_url
+
+        # Tenant-specific Bedrock setting
+        if tenant.get("use_bedrock"):
+            env["CLAUDE_CODE_USE_BEDROCK"] = "true"
+
+        return env
+
+    async def _create_client_with_tenant_env(
+        self,
+        tenant_id: Optional[str],
+        options: 'ClaudeAgentOptions',
+    ) -> ClaudeSDKClient:
+        """Create a ClaudeSDKClient with tenant-specific environment variables.
+
+        Uses an asyncio.Lock to safely set/restore environment variables
+        around client creation. The lock is held only during subprocess spawn (ms-level).
+        """
+        if not tenant_id:
+            # No tenant isolation, use global environment
+            client = ClaudeSDKClient(options=options)
+            await client.__aenter__()
+            return client
+
+        tenant_env = await self._get_tenant_environment(tenant_id)
+        if not tenant_env:
+            # No tenant-specific env, use global
+            client = ClaudeSDKClient(options=options)
+            await client.__aenter__()
+            return client
+
+        async with self._env_lock:
+            # Save current env values
+            saved = {k: os.environ.get(k) for k in tenant_env}
+            os.environ.update(tenant_env)
+            try:
+                client = ClaudeSDKClient(options=options)
+                await client.__aenter__()
+            finally:
+                # Restore original env values
+                for k, v in saved.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+        return client
 
     async def _build_options(
         self,
         agent_config: dict,
         enable_skills: bool,
         enable_mcp: bool,
-        resume_session_id: Optional[str] = None
+        resume_session_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> ClaudeAgentOptions:
         """Build ClaudeAgentOptions from agent configuration.
 
@@ -379,7 +457,7 @@ class AgentManager:
             # Use per-agent workspace with symlinked skills
             # When allow_all_skills=True, all skills will be symlinked
             # When allow_all_skills=False, only specified skills will be symlinked
-            agent_workspace_path = workspace_manager.get_agent_workspace(agent_id)
+            agent_workspace_path = workspace_manager.get_agent_workspace(agent_id, tenant_id=tenant_id or "")
             # Check if workspace exists; rebuild if missing (e.g. after deletion or data loss)
             lock = self._workspace_locks.setdefault(agent_id, asyncio.Lock())
             async with lock:
@@ -389,6 +467,7 @@ class AgentManager:
                         agent_id=agent_id,
                         skill_ids=skill_ids,
                         allow_all_skills=allow_all_skills,
+                        tenant_id=tenant_id or "",
                     )
             working_directory = str(agent_workspace_path)
             logger.info(f"Using per-agent workspace: {working_directory} (allow_all_skills={allow_all_skills})")
@@ -522,6 +601,7 @@ class AgentManager:
         session_id: Optional[str] = None,
         enable_skills: bool = False,
         enable_mcp: bool = False,
+        tenant_id: Optional[str] = None,
     ) -> AsyncIterator[dict]:
         """Run conversation with agent and stream responses.
 
@@ -558,7 +638,7 @@ class AgentManager:
             }
             # Store/update session for resumed conversations
             title = user_message[:50] + "..." if len(user_message) > 50 else user_message
-            await session_manager.store_session(session_id, agent_id, title)
+            await session_manager.store_session(session_id, agent_id, title, tenant_id=tenant_id)
 
             # Save user message to database for resumed sessions
             await self._save_message(
@@ -571,7 +651,7 @@ class AgentManager:
         _configure_claude_environment()
 
         # Build options - use resume parameter if continuing an existing session
-        options = await self._build_options(agent_config, enable_skills, enable_mcp, session_id if is_resuming else None)
+        options = await self._build_options(agent_config, enable_skills, enable_mcp, session_id if is_resuming else None, tenant_id=tenant_id)
         logger.info(f"Built options - allowed_tools: {options.allowed_tools}, permission_mode: {options.permission_mode}, resume: {session_id if is_resuming else None}")
         logger.info(f"MCP servers: {options.mcp_servers}")
         logger.info(f"Working directory: {options.cwd}")
@@ -583,8 +663,9 @@ class AgentManager:
         sdk_session_id = session_id  # Will be updated for new sessions
 
         try:
-            logger.info(f"Creating ClaudeSDKClient...")
-            async with ClaudeSDKClient(options=options) as client:
+            logger.info(f"Creating ClaudeSDKClient (tenant={tenant_id})...")
+            client = await self._create_client_with_tenant_env(tenant_id, options)
+            try:
                 # For resumed sessions, store client immediately
                 # For new sessions, we'll store after getting SDK session_id
                 if is_resuming:
@@ -624,7 +705,7 @@ class AgentManager:
 
                                     # Store session with SDK session_id
                                     title = user_message[:50] + "..." if len(user_message) > 50 else user_message
-                                    await session_manager.store_session(sdk_session_id, agent_id, title)
+                                    await session_manager.store_session(sdk_session_id, agent_id, title, tenant_id=tenant_id)
 
                                     # Save user message to database with SDK session_id
                                     await self._save_message(
@@ -709,6 +790,9 @@ class AgentManager:
                     if sdk_session_id:
                         self._clients.pop(sdk_session_id, None)
                     logger.info(f"Client removed from tracking for session {sdk_session_id}")
+            finally:
+                # Clean up client
+                await client.__aexit__(None, None, None)
 
         except Exception as e:
             import traceback
@@ -783,6 +867,7 @@ class AgentManager:
         answers: dict[str, str],
         enable_skills: bool = False,
         enable_mcp: bool = False,
+        tenant_id: Optional[str] = None,
     ) -> AsyncIterator[dict]:
         """Continue conversation by providing answers to AskUserQuestion.
 
@@ -796,6 +881,7 @@ class AgentManager:
             answers: Dictionary mapping question text to answer text
             enable_skills: Whether to enable skills
             enable_mcp: Whether to enable MCP servers
+            tenant_id: Optional tenant ID for per-tenant API key isolation
 
         Yields:
             Formatted messages from the agent
@@ -816,7 +902,7 @@ class AgentManager:
         _configure_claude_environment()
 
         # Build options with resume to continue the session
-        options = await self._build_options(agent_config, enable_skills, enable_mcp, resume_session_id=session_id)
+        options = await self._build_options(agent_config, enable_skills, enable_mcp, resume_session_id=session_id, tenant_id=tenant_id)
 
         # Format answers as a user message
         answer_message = json.dumps({"answers": answers}, indent=2)
@@ -833,8 +919,9 @@ class AgentManager:
         assistant_model = None
 
         try:
-            logger.info(f"Creating ClaudeSDKClient for answer continuation with resume={session_id}...")
-            async with ClaudeSDKClient(options=options) as client:
+            logger.info(f"Creating ClaudeSDKClient for answer continuation with resume={session_id} (tenant={tenant_id})...")
+            client = await self._create_client_with_tenant_env(tenant_id, options)
+            try:
                 # Store client for potential interruption
                 self._clients[session_id] = client
 
@@ -894,6 +981,9 @@ class AgentManager:
                             "total_cost_usd": getattr(message, 'total_cost_usd', None),
                             "num_turns": getattr(message, 'num_turns', 1),
                         }
+            finally:
+                # Clean up client
+                await client.__aexit__(None, None, None)
 
         except Exception as e:
             import traceback

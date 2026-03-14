@@ -15,6 +15,16 @@ This will:
 
 **⚠️ Important**: After first run, edit `backend/.env` and add your `ANTHROPIC_API_KEY`
 
+## 🔐 First-Time Setup
+
+After starting the platform:
+
+1. Open http://localhost:5173 — you'll be redirected to the **login page**
+2. Click **Register** to create your account (email + password)
+3. After registration, create a **tenant** (organization) via the Tenant Settings page (`/tenant`)
+4. Set your **Anthropic API key** in Tenant Settings (each tenant manages their own key)
+5. Start creating agents and chatting!
+
 ## 🛑 Stopping the Platform
 
 ```bash
@@ -58,6 +68,9 @@ tail -f logs/*.log
 - **Backend API**: http://localhost:8000
 - **API Documentation**: http://localhost:8000/docs
 - **Health Check**: http://localhost:8000/health
+- **Login Page**: http://localhost:5173/login
+- **Register Page**: http://localhost:5173/register
+- **Tenant Settings**: http://localhost:5173/tenant
 
 ## 🔧 Troubleshooting
 
@@ -94,6 +107,21 @@ rm -rf .pids logs
 # Start fresh
 ./start.sh
 ```
+
+## 🔄 Data Migration (Existing Installations)
+
+If upgrading from a pre-multi-tenancy version:
+
+```bash
+# 1. Run the migration script to backfill tenant_id on existing data
+cd backend
+python scripts/migrate_to_multi_tenancy.py
+
+# 2. Run init-aws.sh to add GSIs to DynamoDB tables
+cd .. && bash init-aws.sh
+```
+
+This creates a "default-tenant", assigns all existing resources and users to it, and adds the required database indexes.
 
 ## 📚 Documentation
 

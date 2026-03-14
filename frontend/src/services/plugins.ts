@@ -31,6 +31,8 @@ const toCamelCase = (data: Record<string, unknown>): Plugin => {
     status: data.status as 'installed' | 'updating' | 'error',
     errorMessage: data.error_message as string | undefined,
     marketplace: data.marketplace as string | undefined,
+    tenantId: (data.tenant_id as string) ?? '',
+    createdBy: (data.created_by as string) ?? '',
   };
 };
 

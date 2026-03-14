@@ -63,12 +63,20 @@ class Settings(BaseSettings):
     dynamodb_skill_versions_table: str = "awesome_skills_platform_skill_versions"
     dynamodb_settings_table: str = "awesome_skills_platform_settings"
     dynamodb_plugins_table: str = "awesome_skills_platform_plugins"
+    dynamodb_tenants_table: str = "awesome_skills_platform_tenants"
 
     # JWT Authentication
     jwt_secret_key: str = "your-secret-key-change-in-production"
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 7
+
+    # Tenant encryption (fallback for local dev without KMS)
+    tenant_key_encryption_secret: str = "change-this-in-production-32chars!"
+
+    # KMS Configuration (production)
+    kms_key_alias: str = "alias/agent-platform-tenant-keys"
+    use_kms_encryption: bool = False  # Set True in production with KMS
 
     # Rate Limiting
     rate_limit_per_minute: int = 100

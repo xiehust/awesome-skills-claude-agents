@@ -27,6 +27,8 @@ const toCamelCase = (data: Record<string, unknown>): MCPServer => {
     version: data.version as string | undefined,
     createdAt: data.created_at as string,
     updatedAt: data.updated_at as string,
+    tenantId: (data.tenant_id as string) ?? '',
+    createdBy: (data.created_by as string) ?? '',
   };
 };
 

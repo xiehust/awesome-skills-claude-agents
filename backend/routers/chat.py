@@ -1,5 +1,5 @@
 """Chat SSE streaming API endpoints."""
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from schemas.message import ChatRequest, ChatSessionResponse, AnswerQuestionRequest, ChatMessageResponse
 from database import db
@@ -12,6 +12,7 @@ from core.exceptions import (
     AgentExecutionException,
     AgentTimeoutException,
 )
+from middleware.tenant import TenantContext, get_tenant_context, require_role
 import json
 import asyncio
 import logging
@@ -36,7 +37,7 @@ def create_sse_error(code: str, message: str, detail: str = None, suggested_acti
 
 
 @router.post("/stream")
-async def chat_stream(request: Request):
+async def chat_stream(request: Request, ctx: TenantContext = Depends(get_tenant_context)):
     """Stream chat responses via SSE."""
     try:
         body = await request.json()
@@ -52,8 +53,12 @@ async def chat_stream(request: Request):
             detail=str(e),
         )
 
-    # Verify agent exists
-    agent = await db.agents.get(chat_request.agent_id)
+    # Verify agent exists (check tenant-owned or default)
+    agent = await db.agents.get_with_tenant(chat_request.agent_id, ctx.tenant_id)
+    if not agent:
+        # Also allow the global default agent
+        if chat_request.agent_id == "default":
+            agent = await db.agents.get("default")
     if not agent:
         raise AgentNotFoundException(
             detail=f"Agent with ID '{chat_request.agent_id}' does not exist",
@@ -69,6 +74,7 @@ async def chat_stream(request: Request):
                 session_id=chat_request.session_id,
                 enable_skills=chat_request.enable_skills,
                 enable_mcp=chat_request.enable_mcp,
+                tenant_id=ctx.tenant_id,
             ):
                 logger.debug(f"Yielding message: {msg.get('type')}")
                 yield f"data: {json.dumps(msg)}\n\n"
@@ -119,7 +125,7 @@ async def chat_stream(request: Request):
 
 
 @router.post("/answer-question")
-async def answer_question(request: Request):
+async def answer_question(request: Request, ctx: TenantContext = Depends(get_tenant_context)):
     """Continue chat by answering an AskUserQuestion via SSE.
 
     This endpoint is used when Claude asks the user a question via the
@@ -140,8 +146,11 @@ async def answer_question(request: Request):
             detail=str(e),
         )
 
-    # Verify agent exists
-    agent = await db.agents.get(answer_request.agent_id)
+    # Verify agent exists (check tenant-owned or default)
+    agent = await db.agents.get_with_tenant(answer_request.agent_id, ctx.tenant_id)
+    if not agent:
+        if answer_request.agent_id == "default":
+            agent = await db.agents.get("default")
     if not agent:
         raise AgentNotFoundException(
             detail=f"Agent with ID '{answer_request.agent_id}' does not exist",
@@ -158,6 +167,7 @@ async def answer_question(request: Request):
                 answers=answer_request.answers,
                 enable_skills=answer_request.enable_skills,
                 enable_mcp=answer_request.enable_mcp,
+                tenant_id=ctx.tenant_id,
             ):
                 logger.debug(f"Yielding message: {msg.get('type')}")
                 yield f"data: {json.dumps(msg)}\n\n"
@@ -193,12 +203,12 @@ async def answer_question(request: Request):
 
 
 @router.get("/sessions", response_model=list[ChatSessionResponse])
-async def list_sessions(agent_id: str | None = None):
+async def list_sessions(agent_id: str | None = None, ctx: TenantContext = Depends(get_tenant_context)):
     """List chat sessions, optionally filtered by agent_id.
 
     Returns sessions sorted by last_accessed descending.
     """
-    sessions = await session_manager.list_sessions(agent_id=agent_id)
+    sessions = await session_manager.list_sessions(agent_id=agent_id, user_id=ctx.user_id)
     return [
         ChatSessionResponse(
             id=s.session_id,
@@ -212,32 +222,33 @@ async def list_sessions(agent_id: str | None = None):
 
 
 @router.get("/sessions/{session_id}", response_model=ChatSessionResponse)
-async def get_session(session_id: str):
+async def get_session(session_id: str, ctx: TenantContext = Depends(get_tenant_context)):
     """Get a specific chat session by ID."""
-    session = await session_manager.get_session(session_id)
-    if not session:
+    # Validate session belongs to tenant via the underlying DB record
+    session_record = await db.sessions.get_with_tenant(session_id, ctx.tenant_id)
+    if not session_record:
         raise SessionNotFoundException(
             detail=f"Session with ID '{session_id}' does not exist",
             suggested_action="Please check the session ID and try again"
         )
     return ChatSessionResponse(
-        id=session.session_id,
-        agent_id=session.agent_id,
-        title=session.title,
-        created_at=session.created_at,
-        last_accessed_at=session.last_accessed,
+        id=session_record.get("id", session_id),
+        agent_id=session_record.get("agent_id", ""),
+        title=session_record.get("title", ""),
+        created_at=session_record.get("created_at", ""),
+        last_accessed_at=session_record.get("last_accessed_at", ""),
     )
 
 
 @router.get("/sessions/{session_id}/messages", response_model=list[ChatMessageResponse])
-async def get_session_messages(session_id: str):
+async def get_session_messages(session_id: str, ctx: TenantContext = Depends(get_tenant_context)):
     """Get all messages for a chat session.
 
     Returns messages in chronological order.
     """
-    # Verify session exists
-    session = await session_manager.get_session(session_id)
-    if not session:
+    # Verify session belongs to tenant
+    session_record = await db.sessions.get_with_tenant(session_id, ctx.tenant_id)
+    if not session_record:
         raise SessionNotFoundException(
             detail=f"Session with ID '{session_id}' does not exist",
             suggested_action="Please check the session ID and try again"
@@ -258,12 +269,17 @@ async def get_session_messages(session_id: str):
 
 
 @router.post("/stop/{session_id}")
-async def stop_session(session_id: str):
+async def stop_session(session_id: str, ctx: TenantContext = Depends(get_tenant_context)):
     """Stop a running chat session.
 
     This will interrupt the currently running agent for the given session.
     The agent will stop processing and the stream will end gracefully.
     """
+    # Verify session belongs to tenant
+    session_record = await db.sessions.get_with_tenant(session_id, ctx.tenant_id)
+    if not session_record:
+        return {"status": "not_found", "message": "Session not found"}
+
     logger.info(f"Received stop request for session {session_id}")
     result = await agent_manager.interrupt_session(session_id)
 
@@ -275,8 +291,16 @@ async def stop_session(session_id: str):
 
 
 @router.delete("/sessions/{session_id}", status_code=204)
-async def delete_session(session_id: str):
+async def delete_session(session_id: str, ctx: TenantContext = Depends(get_tenant_context)):
     """Delete a chat session and all its messages."""
+    # Verify session belongs to tenant
+    session_record = await db.sessions.get_with_tenant(session_id, ctx.tenant_id)
+    if not session_record:
+        raise SessionNotFoundException(
+            detail=f"Session with ID '{session_id}' does not exist",
+            suggested_action="Please check the session ID and try again"
+        )
+
     # First delete all messages for this session
     await db.messages.delete_by_session(session_id)
 

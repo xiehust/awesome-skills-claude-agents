@@ -69,6 +69,16 @@ class SkillManager:
             )
         return self._s3_client
 
+    def _get_s3_prefix(self, skill_name: str, tenant_id: str = "") -> str:
+        """Get S3 key prefix for a skill.
+
+        Tenant skills: tenants/{tenant_id}/skills/{skill_name}/
+        System skills: skills/{skill_name}/
+        """
+        if tenant_id and tenant_id != "__SYSTEM__":
+            return f"tenants/{tenant_id}/skills/{skill_name}"
+        return f"skills/{skill_name}"
+
     def _ensure_local_dir(self):
         """Ensure local skills directory exists."""
         self.local_dir.mkdir(parents=True, exist_ok=True)

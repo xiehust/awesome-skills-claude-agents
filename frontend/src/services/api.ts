@@ -170,7 +170,7 @@ export class ApiError extends Error {
 api.interceptors.request.use(
   (config) => {
     // Add auth token if available
-    const token = localStorage.getItem('authToken');
+    const token = localStorage.getItem('auth_token');
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
@@ -191,7 +191,8 @@ api.interceptors.response.use(
     // Handle authentication errors
     if (parsedError.code === ErrorCodes.AUTH_TOKEN_EXPIRED ||
         parsedError.code === ErrorCodes.AUTH_TOKEN_INVALID) {
-      localStorage.removeItem('authToken');
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('auth_refresh_token');
       // Only redirect if not already on login page
       if (!window.location.pathname.includes('/login')) {
         window.location.href = '/login';

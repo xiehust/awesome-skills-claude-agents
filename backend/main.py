@@ -8,7 +8,7 @@ from slowapi.errors import RateLimitExceeded
 import logging
 
 from config import settings
-from routers import agents_router, skills_router, mcp_router, chat_router, auth_router, workspace_router, settings_router, plugins_router
+from routers import agents_router, skills_router, mcp_router, chat_router, auth_router, workspace_router, settings_router, plugins_router, tenants_router, admin_router
 from middleware.error_handler import setup_error_handlers
 from middleware.rate_limit import limiter
 
@@ -36,6 +36,19 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.app_name} v{settings.app_version}")
     logger.info(f"Debug mode: {settings.debug}")
     logger.info(f"Rate limit: {settings.rate_limit_per_minute}/minute")
+
+    # Security checks for production
+    if not settings.debug:
+        if settings.tenant_key_encryption_secret == "change-this-in-production-32chars!":
+            logger.warning(
+                "SECURITY WARNING: Using default tenant_key_encryption_secret! "
+                "Set TENANT_KEY_ENCRYPTION_SECRET in .env for production."
+            )
+        if settings.jwt_secret_key == "your-secret-key-change-in-production":
+            logger.warning(
+                "SECURITY WARNING: Using default jwt_secret_key! "
+                "Set JWT_SECRET_KEY in .env for production. Attackers can forge tokens."
+            )
     yield
     # Shutdown
     logger.info("Shutting down...")
@@ -101,6 +114,8 @@ app.include_router(chat_router, prefix="/api/chat", tags=["chat"])
 app.include_router(workspace_router, prefix="/api/workspace", tags=["workspace"])
 app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 app.include_router(plugins_router, prefix="/api/plugins", tags=["plugins"])
+app.include_router(tenants_router, prefix="/api")
+app.include_router(admin_router, prefix="/api")
 
 
 @app.get("/health")

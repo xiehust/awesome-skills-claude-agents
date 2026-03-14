@@ -4,12 +4,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from jose import jwt, JWTError
-from passlib.context import CryptContext
+import bcrypt
 
 from config import settings
-
-# Password hashing context
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 class TokenPayload:
@@ -30,19 +27,24 @@ class TokenPayload:
 
 def hash_password(password: str) -> str:
     """Hash a password using bcrypt."""
-    return pwd_context.hash(password)
+    # bcrypt has a 72-byte limit; truncate to be safe
+    password_bytes = password.encode("utf-8")[:72]
+    return bcrypt.hashpw(password_bytes, bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash."""
-    return pwd_context.verify(plain_password, hashed_password)
+    password_bytes = plain_password.encode("utf-8")[:72]
+    return bcrypt.checkpw(password_bytes, hashed_password.encode("utf-8"))
 
 
-def create_access_token(user_id: str, expires_delta: Optional[timedelta] = None) -> str:
+def create_access_token(user_id: str, tenant_id: str = "", role: str = "member", expires_delta: Optional[timedelta] = None) -> str:
     """Create a JWT access token.
 
     Args:
         user_id: The user's unique identifier
+        tenant_id: The tenant ID to embed in the token
+        role: The user's role within the tenant
         expires_delta: Optional custom expiration time
 
     Returns:
@@ -54,6 +56,8 @@ def create_access_token(user_id: str, expires_delta: Optional[timedelta] = None)
     expire = datetime.now(timezone.utc) + expires_delta
     to_encode = {
         "sub": user_id,
+        "tid": tenant_id,
+        "role": role,
         "exp": expire,
         "iat": datetime.now(timezone.utc),
         "type": "access",
@@ -66,11 +70,13 @@ def create_access_token(user_id: str, expires_delta: Optional[timedelta] = None)
     )
 
 
-def create_refresh_token(user_id: str, expires_delta: Optional[timedelta] = None) -> str:
+def create_refresh_token(user_id: str, tenant_id: str = "", role: str = "member", expires_delta: Optional[timedelta] = None) -> str:
     """Create a JWT refresh token.
 
     Args:
         user_id: The user's unique identifier
+        tenant_id: The tenant ID to embed in the token
+        role: The user's role within the tenant
         expires_delta: Optional custom expiration time
 
     Returns:
@@ -82,6 +88,8 @@ def create_refresh_token(user_id: str, expires_delta: Optional[timedelta] = None
     expire = datetime.now(timezone.utc) + expires_delta
     to_encode = {
         "sub": user_id,
+        "tid": tenant_id,
+        "role": role,
         "exp": expire,
         "iat": datetime.now(timezone.utc),
         "type": "refresh",
@@ -94,15 +102,15 @@ def create_refresh_token(user_id: str, expires_delta: Optional[timedelta] = None
     )
 
 
-def verify_token(token: str, token_type: str = "access") -> Optional[str]:
-    """Verify a JWT token and return the user_id.
+def verify_token(token: str, token_type: str = "access") -> Optional[dict]:
+    """Verify a JWT token and return the token data.
 
     Args:
         token: The JWT token to verify
         token_type: Expected token type ("access" or "refresh")
 
     Returns:
-        User ID if token is valid, None otherwise
+        Dict with sub, tid, and role if token is valid, None otherwise
     """
     try:
         payload = jwt.decode(
@@ -122,7 +130,11 @@ def verify_token(token: str, token_type: str = "access") -> Optional[str]:
         if datetime.fromtimestamp(exp, tz=timezone.utc) < datetime.now(timezone.utc):
             return None
 
-        return payload.get("sub")
+        return {
+            "sub": payload.get("sub"),
+            "tid": payload.get("tid", ""),
+            "role": payload.get("role", "member"),
+        }
 
     except JWTError:
         return None
@@ -150,17 +162,19 @@ def decode_token(token: str) -> Optional[dict]:
         return None
 
 
-def create_token_pair(user_id: str) -> tuple[str, str, int]:
+def create_token_pair(user_id: str, tenant_id: str = "", role: str = "member") -> tuple[str, str, int]:
     """Create both access and refresh tokens.
 
     Args:
         user_id: The user's unique identifier
+        tenant_id: The tenant ID to embed in the tokens
+        role: The user's role within the tenant
 
     Returns:
         Tuple of (access_token, refresh_token, expires_in_seconds)
     """
-    access_token = create_access_token(user_id)
-    refresh_token = create_refresh_token(user_id)
+    access_token = create_access_token(user_id, tenant_id, role)
+    refresh_token = create_refresh_token(user_id, tenant_id, role)
     expires_in = settings.access_token_expire_minutes * 60
 
     return access_token, refresh_token, expires_in

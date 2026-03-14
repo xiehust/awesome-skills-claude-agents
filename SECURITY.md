@@ -6,6 +6,7 @@ This document describes the comprehensive security model implemented in the Agen
 
 - [Overview](#overview)
 - [Security Layers](#security-layers)
+- [Tenant Security](#tenant-security)
 - [Agent Workspace Isolation](#agent-workspace-isolation)
 - [File Access Control](#file-access-control)
 - [Skill Access Control](#skill-access-control)
@@ -25,6 +26,9 @@ The platform implements a **defense-in-depth** security model with multiple laye
 - ✅ Cannot access other agents' data
 - ✅ Cannot access system files or main workspace
 - ✅ Cannot bypass restrictions via bash commands
+- ✅ Cannot access other tenants' resources (database-level isolation)
+- ✅ Cannot use other tenants' API keys (encrypted at rest)
+- ✅ Must authenticate via JWT with tenant context
 
 ### Security Principles
 
@@ -37,21 +41,27 @@ The platform implements a **defense-in-depth** security model with multiple laye
 
 ## Security Layers
 
-The platform implements **four security layers** that work together:
+The platform implements **six security layers** that work together:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ Layer 4: Bash Command Protection (NEW)                 │
+│ Layer 5: Bash Command Protection                       │
 │ └─ Parse & validate file paths in bash commands        │
 ├─────────────────────────────────────────────────────────┤
-│ Layer 3: File Tool Access Control                      │
+│ Layer 4: File Tool Access Control                      │
 │ └─ Validate Read/Write/Edit/Glob/Grep operations       │
 ├─────────────────────────────────────────────────────────┤
-│ Layer 2: Skill Access Control                          │
+│ Layer 3: Skill Access Control                          │
 │ └─ PreToolUse hook validates Skill tool invocations    │
 ├─────────────────────────────────────────────────────────┤
-│ Layer 1: Workspace Isolation                           │
-│ └─ Per-agent workspace with symlinked skills           │
+│ Layer 2: Workspace Isolation                           │
+│ └─ Per-tenant per-agent workspace with symlinked skills│
+├─────────────────────────────────────────────────────────┤
+│ Layer 1: Tenant Data Isolation                         │
+│ └─ tenant_id-index GSI, get_with_tenant() validation   │
+├─────────────────────────────────────────────────────────┤
+│ Layer 0: Authentication & RBAC                         │
+│ └─ JWT + TenantContext + role-based access control      │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -222,6 +232,90 @@ if tool_name == 'Bash':
 
 ---
 
+## Tenant Security
+
+### Authentication (Layer 0)
+
+All API endpoints (except `/auth/login` and `/auth/register`) require JWT authentication via `TenantContext` middleware.
+
+**Location**: `backend/middleware/tenant.py`, `backend/core/auth.py`
+
+**JWT Claims**:
+```json
+{
+  "sub": "user_id",
+  "tid": "tenant_id",
+  "role": "owner|admin|member|viewer",
+  "exp": "...",
+  "type": "access"
+}
+```
+
+**RBAC Enforcement**:
+```python
+# Any authenticated user
+ctx: TenantContext = Depends(get_tenant_context)
+
+# Specific roles required
+ctx: TenantContext = Depends(require_role("owner", "admin"))
+
+# Platform admin only
+ctx: TenantContext = Depends(require_platform_admin())
+```
+
+### Data Isolation (Layer 1)
+
+**Location**: `backend/database/dynamodb.py`
+
+All resource tables have a `tenant_id-index` GSI. Two key methods enforce isolation:
+
+- `list_by_tenant(tenant_id)` — queries GSI with pagination, never returns cross-tenant data
+- `get_with_tenant(item_id, tenant_id)` — validates tenant ownership on every access
+
+**Cross-Tenant Access Prevention**:
+```python
+if item_tenant_id != tenant_id:
+    logger.warning(
+        f"CROSS_TENANT_ACCESS_ATTEMPT: tenant={tenant_id} tried to access "
+        f"item={item_id} owned by tenant={item_tenant_id}"
+    )
+    return None  # Returns 404, not 403 (prevents existence leakage)
+```
+
+**System Resources**: Items with `tenant_id = "__SYSTEM__"` are accessible to all tenants (e.g., default agent, system skills).
+
+### API Key Encryption
+
+**Location**: `backend/core/key_manager.py`
+
+Per-tenant Anthropic API keys are encrypted at rest:
+
+- **Production**: AWS KMS envelope encryption (GenerateDataKey + Fernet)
+- **Development**: Fernet with configurable secret (`TENANT_KEY_ENCRYPTION_SECRET`)
+- In-memory cache with 5-minute TTL
+- Cache invalidation on key rotation
+- `asyncio.Lock` prevents env variable race conditions during SDK client creation
+
+**Security Warning**: The default encryption secret MUST be changed in production. A startup warning is logged if the default is used in non-debug mode.
+
+### Monitoring Tenant Security Events
+
+```bash
+# Cross-tenant access attempts
+tail -f logs/backend.log | grep "CROSS_TENANT_ACCESS_ATTEMPT"
+
+# File access denials
+tail -f logs/backend.log | grep "FILE ACCESS DENIED"
+
+# Bash command denials
+tail -f logs/backend.log | grep "BASH FILE ACCESS DENIED"
+
+# Skill access denials
+tail -f logs/backend.log | grep "BLOCKED.*Skill"
+```
+
+---
+
 ## Agent Workspace Isolation
 
 ### Directory Structure
@@ -237,16 +331,20 @@ Main Workspace (Skill Storage):
     ├── pdf/
     └── ... (all other skills)
 
-Isolated Agent Workspaces:
-/tmp/agent-platform-workspaces/
-├── agent-123/
-│   └── .claude/skills/
-│       ├── skill-creator -> /workspace/.claude/skills/skill-creator
-│       └── docx -> /workspace/.claude/skills/docx
-│
-└── agent-456/
-    └── .claude/skills/
-        └── pdf -> /workspace/.claude/skills/pdf
+Isolated Agent Workspaces (tenant-scoped):
+{workspaces_dir}/
+├── {tenant_A}/
+│   ├── agent-123/
+│   │   └── .claude/skills/
+│   │       ├── skill-creator -> /workspace/.claude/skills/skill-creator
+│   │       └── docx -> /workspace/.claude/skills/docx
+│   └── agent-456/
+│       └── .claude/skills/
+│           └── pdf -> /workspace/.claude/skills/pdf
+└── {tenant_B}/
+    └── agent-789/
+        └── .claude/skills/
+            └── xlsx -> /workspace/.claude/skills/xlsx
 ```
 
 ### Workspace Creation
@@ -633,6 +731,11 @@ $(cat /etc/passwd)
 - **Skill Access Control**: `agent_manager.py:163-207`
 - **File Access Control**: `agent_manager.py:99-207`
 - **Bash Protection**: `agent_manager.py:159-202`
+- **Tenant Middleware**: `backend/middleware/tenant.py`
+- **Key Manager**: `backend/core/key_manager.py`
+- **Tenant Router**: `backend/routers/tenants.py`
+- **Admin Router**: `backend/routers/admin.py`
+- **Auth Router**: `backend/routers/auth.py`
 
 ### Related Documentation
 

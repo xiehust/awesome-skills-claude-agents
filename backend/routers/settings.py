@@ -1,16 +1,18 @@
 """Settings API endpoints for managing runtime configuration."""
 import logging
 from datetime import datetime
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from schemas.settings import SettingsUpdateRequest, SettingsResponse
 from database import db
 from config import settings as env_settings
+from middleware.tenant import TenantContext, get_tenant_context
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Global settings record ID (single record for the entire application)
-SETTINGS_ID = "global"
+# Settings record ID function - scoped per tenant
+def _settings_id(tenant_id: str) -> str:
+    return f"tenant_{tenant_id}" if tenant_id else "global"
 
 # In-memory cache for sensitive values (cleared on restart)
 # These are stored separately from the database for security
@@ -18,12 +20,12 @@ _secrets_cache: dict[str, str] = {}
 
 
 @router.get("", response_model=SettingsResponse)
-async def get_settings():
+async def get_settings(ctx: TenantContext = Depends(get_tenant_context)):
     """Get current runtime settings.
 
     Returns settings with sensitive fields masked (only showing *_set booleans).
     """
-    stored = await db.settings.get(SETTINGS_ID)
+    stored = await db.settings.get(_settings_id(ctx.tenant_id))
 
     if not stored:
         # Return defaults from environment variables
@@ -54,14 +56,14 @@ async def get_settings():
 
 
 @router.put("", response_model=SettingsResponse)
-async def update_settings(request: SettingsUpdateRequest):
+async def update_settings(request: SettingsUpdateRequest, ctx: TenantContext = Depends(get_tenant_context)):
     """Update runtime settings.
 
     Sensitive fields (API keys, secrets, tokens) are cached in-memory
     and only their presence is stored in the database (*_set booleans).
     """
     updates: dict = {
-        "id": SETTINGS_ID,
+        "id": _settings_id(ctx.tenant_id),
         "updated_at": datetime.now().isoformat(),
     }
 
@@ -107,13 +109,13 @@ async def update_settings(request: SettingsUpdateRequest):
             del _secrets_cache["aws_bearer_token"]
 
     # Merge with existing settings
-    existing = await db.settings.get(SETTINGS_ID) or {}
+    existing = await db.settings.get(_settings_id(ctx.tenant_id)) or {}
     merged = {**existing, **updates}
 
     await db.settings.put(merged)
     logger.info("Settings updated successfully")
 
-    return await get_settings()
+    return await get_settings(ctx=ctx)
 
 
 # Helper functions for other modules to access runtime credentials

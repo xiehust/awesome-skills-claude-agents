@@ -7,6 +7,8 @@ from .auth import router as auth_router
 from .workspace import router as workspace_router
 from .settings import router as settings_router
 from .plugins import router as plugins_router
+from .tenants import router as tenants_router
+from .admin import router as admin_router
 
 __all__ = [
     "agents_router",
@@ -17,4 +19,6 @@ __all__ = [
     "workspace_router",
     "settings_router",
     "plugins_router",
+    "tenants_router",
+    "admin_router",
 ]

@@ -80,6 +80,8 @@ class ChatSession(BaseModel):
     title: str
     created_at: datetime
     last_accessed_at: datetime
+    tenant_id: str | None = None
+    user_id: str | None = None
 
 
 class ChatSessionResponse(BaseModel):
@@ -90,6 +92,8 @@ class ChatSessionResponse(BaseModel):
     title: str
     created_at: str
     last_accessed_at: str
+    tenant_id: str = ""
+    user_id: str = ""
 
 
 class ChatMessageResponse(BaseModel):

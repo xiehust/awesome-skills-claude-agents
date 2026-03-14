@@ -33,6 +33,8 @@ class PluginResponse(BaseModel):
     status: Literal["installed", "updating", "error"]
     error_message: str | None = None
     marketplace: str | None = Field(default=None, description="Marketplace name if from a marketplace repo")
+    tenant_id: str = ""
+    created_by: str = ""
 
 
 class PluginListResponse(BaseModel):

@@ -1,5 +1,6 @@
 import type { ChatRequest, StreamEvent, ChatSession, ChatMessage } from '../types';
 import api from './api';
+import { getAuthToken } from './auth';
 
 export const chatService = {
   // Stream chat messages using SSE
@@ -15,6 +16,7 @@ export const chatService = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'Authorization': `Bearer ${getAuthToken() || ''}`,
       },
       body: JSON.stringify({
         agent_id: request.agentId,
@@ -138,6 +140,7 @@ export const chatService = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'Authorization': `Bearer ${getAuthToken() || ''}`,
       },
       body: JSON.stringify({
         agent_id: request.agentId,

@@ -63,6 +63,8 @@ class AgentConfig(BaseModel):
     status: Literal["active", "inactive"] = "active"
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    tenant_id: str | None = None
+    created_by: str | None = None
 
     class Config:
         json_schema_extra = {
@@ -186,3 +188,5 @@ class AgentResponse(BaseModel):
     status: str = "active"
     created_at: str = ""
     updated_at: str = ""
+    tenant_id: str = ""
+    created_by: str = ""

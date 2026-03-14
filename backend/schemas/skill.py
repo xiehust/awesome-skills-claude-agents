@@ -12,6 +12,7 @@ class SkillMetadata(BaseModel):
     description: str
     s3_location: str | None = None
     created_by: str | None = None
+    tenant_id: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
     version: str = Field(default="1.0.0")
@@ -53,6 +54,7 @@ class SkillResponse(BaseModel):
     updated_at: str
     version: str
     is_system: bool
+    tenant_id: str = ""
     # Version control fields
     current_version: int = 0
     has_draft: bool = False

@@ -24,10 +24,12 @@
 ## 概述
 
 本平台为用户提供以下功能：
+- **多租户隔离**：组织级多租户架构，每个租户独立管理 API 密钥、资源和用户
 - **与 AI 智能体对话**：通过 SSE 流式传输的交互式聊天界面
 - **管理智能体**：创建、配置和监控 AI 智能体
 - **管理技能**：上传和生成自定义技能
 - **管理 MCP 服务器**：配置模型上下文协议（Model Context Protocol）服务器连接
+- **用户认证与权限**：JWT 认证、基于角色的访问控制（owner/admin/member/viewer）
 
 ## 技术栈
 
@@ -43,13 +45,21 @@
 - FastAPI（Python Web 框架）
 - Uvicorn（ASGI 服务器）
 - Pydantic v2（数据验证）
-- Mock Database（内存数据库，用于演示）
+- DynamoDB（生产数据库）
+- AWS KMS / Fernet（API 密钥加密）
+- JWT + RBAC（认证与授权）
 
 ## 安全性
 
 平台实施了全面的**纵深防御安全模型**，通过多层保护确保智能体安全隔离运行：
 
 ### 🛡️ 四层安全防护
+
+0. **多租户隔离（新增）**：组织级数据隔离
+   - 每个租户拥有独立的工作空间目录：`{workspaces_dir}/{tenant_id}/{agent_id}/`
+   - 所有数据库查询通过 `tenant_id-index` GSI 限定租户范围
+   - 跨租户访问尝试返回 404（防止存在性泄露）并记录安全日志
+   - 每租户独立的 Anthropic API 密钥（KMS 信封加密）
 
 1. **工作空间隔离**：每个智能体在独立的工作空间中运行，通过符号链接访问技能
    - 每个智能体独立的工作空间：`/tmp/agent-platform-workspaces/{agent_id}/`
@@ -114,7 +124,12 @@ awesome-skills-claude-agents/
 │   │   │   ├── agents/      # 智能体管理组件
 │   │   │   ├── skills/      # 技能管理组件
 │   │   │   └── mcp/         # MCP 管理组件
+│   │   ├── contexts/        # React Contexts
+│   │   │   └── AuthContext.tsx # 认证上下文（新增）
 │   │   ├── pages/           # 页面组件
+│   │   │   ├── LoginPage.tsx    # 登录页面（新增）
+│   │   │   ├── RegisterPage.tsx # 注册页面（新增）
+│   │   │   └── TenantSettingsPage.tsx # 租户设置（新增）
 │   │   ├── hooks/           # 自定义 React Hooks
 │   │   ├── services/        # API 服务函数
 │   │   ├── types/           # TypeScript 类型定义
@@ -128,12 +143,20 @@ awesome-skills-claude-agents/
     │   ├── agents.py        # 智能体 CRUD 端点
     │   ├── skills.py        # 技能 CRUD 端点
     │   ├── mcp.py           # MCP CRUD 端点
-    │   └── chat.py          # 聊天流式端点
+    │   ├── chat.py          # 聊天流式端点
+    │   ├── auth.py           # 认证端点
+    │   ├── tenants.py        # 租户管理端点（新增）
+    │   └── admin.py          # 平台管理端点（新增）
+    ├── middleware/           # 中间件
+    │   ├── auth.py           # JWT 认证中间件
+    │   └── tenant.py         # 租户上下文与 RBAC（新增）
     ├── core/                # 业务逻辑
     │   ├── agent_manager.py # 智能体生命周期管理
-    │   └── session_manager.py # 会话管理
+    │   ├── key_manager.py   # API 密钥加密管理（新增）
+    │   ├── session_manager.py # 会话管理
+    │   └── workspace_manager.py # 工作空间隔离管理
     ├── database/            # 数据库层
-    │   └── mock_db.py       # 内存模拟数据库
+    │   └── dynamodb.py      # DynamoDB 数据库
     ├── schemas/             # Pydantic 模型
     └── requirements.txt
 ```
@@ -263,6 +286,17 @@ tail -f logs/frontend.log
 - 连接状态监控
 - 测试连接
 
+### 用户认证
+- 邮箱/密码注册与登录
+- JWT 令牌认证（访问令牌 + 刷新令牌）
+- 受保护路由（未认证重定向到登录页）
+
+### 多租户管理
+- 创建和管理组织（租户）
+- 邀请用户并分配角色（owner/admin/member/viewer）
+- 每租户独立的 Anthropic API 密钥管理
+- 租户资源隔离（智能体、技能、会话等）
+
 ## API 端点
 
 ### 智能体
@@ -290,6 +324,26 @@ tail -f logs/frontend.log
 - `GET /api/chat/sessions` - 列出会话
 - `DELETE /api/chat/sessions/{id}` - 删除会话
 
+### 认证
+- `POST /api/auth/register` - 用户注册
+- `POST /api/auth/login` - 用户登录
+- `POST /api/auth/refresh` - 刷新令牌
+- `GET /api/auth/me` - 获取当前用户信息
+
+### 租户管理
+- `POST /api/tenants` - 创建租户
+- `GET /api/tenants/current` - 获取当前租户信息
+- `PUT /api/tenants/current` - 更新租户设置
+- `PUT /api/tenants/current/api-key` - 设置/轮换 API 密钥
+- `GET /api/tenants/current/users` - 列出租户用户
+- `POST /api/tenants/current/users/invite` - 邀请用户
+
+### 平台管理（管理员）
+- `GET /api/admin/tenants` - 列出所有租户
+- `PUT /api/admin/tenants/{id}/status` - 暂停/激活租户
+- `POST /api/admin/skills` - 创建系统技能
+- `POST /api/admin/mcp` - 创建系统 MCP 服务器
+
 ## 配置
 
 ### 环境变量
@@ -309,6 +363,11 @@ tail -f logs/frontend.log
 - `DEBUG` - 启用调试模式（默认：`true`）
 - `HOST` - 服务器主机（默认：`0.0.0.0`）
 - `PORT` - 服务器端口（默认：`8000`）
+
+#### 可选 - 多租户配置
+- `TENANT_KEY_ENCRYPTION_SECRET` - 租户 API 密钥加密密钥（生产环境必须修改）
+- `USE_KMS_ENCRYPTION` - 设置为 `true` 使用 AWS KMS 加密（生产推荐）
+- `KMS_KEY_ALIAS` - KMS 密钥别名（默认：`alias/agent-platform-tenant-keys`）
 
 完整配置模板请参见 `backend/.env.example`。
 

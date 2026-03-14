@@ -17,8 +17,9 @@
 7. [Technology Stack](#7-technology-stack)
 8. [Deployment Architecture](#8-deployment-architecture)
 9. [Security & Best Practices](#9-security--best-practices)
-10. [Performance & Scalability](#10-performance--scalability)
-11. [Future Enhancements](#11-future-enhancements)
+10. [Multi-Tenancy Architecture](#10-multi-tenancy-architecture)
+11. [Performance & Scalability](#11-performance--scalability)
+12. [Future Enhancements](#12-future-enhancements)
 
 ---
 
@@ -1576,9 +1577,117 @@ Same as previous architecture - JWT-based authentication with AWS Cognito integr
 
 ---
 
-## 10. Performance & Scalability
+## 10. Multi-Tenancy Architecture
 
-### 10.1 Session Management
+### Overview
+
+The platform supports organization-level multi-tenancy where:
+- Users belong to **tenants** (organizations)
+- All resources (agents, skills, MCP servers, sessions, plugins) are **scoped per-tenant**
+- Each tenant manages their own **Anthropic API key** (encrypted at rest)
+- Platform-admin-managed **system resources** (`tenant_id = "__SYSTEM__"`) are visible to all tenants
+
+### Tenant Data Model
+
+```
+tenants table:
+  PK: id (UUID)
+  GSI: slug-index (slug)
+  Fields: name, slug, owner_user_id, encrypted_anthropic_api_key,
+          anthropic_base_url, use_bedrock, plan, max_agents,
+          max_skills, max_mcp_servers, rate_limit_per_minute,
+          status (active|suspended), created_at, updated_at
+```
+
+All resource tables have a `tenant_id-index` GSI for efficient tenant-scoped queries.
+
+### Authentication & Authorization
+
+**JWT Token Structure:**
+```json
+{
+  "sub": "user_id",
+  "tid": "tenant_id",
+  "role": "owner|admin|member|viewer",
+  "exp": "...",
+  "type": "access"
+}
+```
+
+**RBAC Permission Matrix:**
+
+| Resource | owner | admin | member | viewer |
+|----------|-------|-------|--------|--------|
+| Tenant settings | CRUD | RU | R | R |
+| API keys | CRUD | CRUD | - | - |
+| Users (invite) | CRUD | CRUD | R | R |
+| Agents | CRUD | CRUD | CRUD(own) | R |
+| Skills | CRUD | CRUD | CRU(own) | R |
+| MCP servers | CRUD | CRUD | CRU(own) | R |
+| Chat | Full | Full | Full | R |
+
+*Platform admins (`is_platform_admin=True`) bypass all role checks.*
+
+### Per-Tenant API Key Isolation
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│  Tenant Config   │────▶│   Key Manager    │────▶│  Claude SDK     │
+│  (encrypted key) │     │  (KMS/Fernet)    │     │  (env injection)│
+└─────────────────┘     └──────────────────┘     └─────────────────┘
+```
+
+- **Production**: AWS KMS envelope encryption (GenerateDataKey + AES-256)
+- **Development**: Fernet symmetric encryption with configurable secret
+- In-memory cache with 5-minute TTL per tenant
+- `asyncio.Lock` around env-set/restore during SDK client spawn
+
+### Tenant-Scoped Workspace Isolation
+
+```
+{workspaces_dir}/
+├── {tenant_A}/
+│   ├── {agent_1}/.claude/skills/  ← Tenant A's agent workspaces
+│   └── {agent_2}/.claude/skills/
+├── {tenant_B}/
+│   └── {agent_3}/.claude/skills/  ← Tenant B's agent workspaces
+```
+
+Physical directory isolation ensures cross-tenant access is impossible at the filesystem level.
+
+### System Resources
+
+Resources with `tenant_id = "__SYSTEM__"` (e.g., system skills, default agent) are visible to all tenants. List operations merge tenant + system results:
+
+```python
+tenant_items, system_items = await asyncio.gather(
+    db.skills.list_by_tenant(ctx.tenant_id),
+    db.skills.list_by_tenant("__SYSTEM__"),
+)
+```
+
+### Database Operations
+
+Two key methods enforce tenant isolation:
+- `list_by_tenant(tenant_id)` — queries `tenant_id-index` GSI with pagination
+- `get_with_tenant(item_id, tenant_id)` — get + validate ownership; returns `None` on mismatch (not 403) to prevent existence leakage; logs `CROSS_TENANT_ACCESS_ATTEMPT`
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `backend/schemas/tenant.py` | Tenant Pydantic models |
+| `backend/core/key_manager.py` | API key encryption (KMS/Fernet) |
+| `backend/middleware/tenant.py` | TenantContext, RBAC dependencies |
+| `backend/routers/tenants.py` | Tenant management API |
+| `backend/routers/admin.py` | Platform admin API |
+| `backend/scripts/migrate_to_multi_tenancy.py` | Data migration script |
+
+---
+
+## 11. Performance & Scalability
+
+### 11.1 Session Management
 
 **ClaudeSDKClient Sessions**:
 - Each session maintains conversation context
@@ -1596,7 +1705,7 @@ async def cleanup_sessions():
             session_manager.delete_session(session_id)
 ```
 
-### 10.2 Streaming Optimization
+### 11.2 Streaming Optimization
 
 **Async Iterator Processing**:
 ```python
@@ -1606,7 +1715,7 @@ async for message in client.receive_response():
     yield format_sse_event(message)
 ```
 
-### 10.3 Tool Execution
+### 11.3 Tool Execution
 
 **Built-in Tools**: Executed by Claude Code CLI process
 - Efficient subprocess management
@@ -1619,7 +1728,7 @@ async for message in client.receive_response():
 
 ---
 
-## 11. Future Enhancements
+## 12. Future Enhancements
 
 ### Phase 2 Features
 

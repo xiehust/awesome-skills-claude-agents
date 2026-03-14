@@ -49,6 +49,8 @@ export interface Agent {
   status: 'active' | 'inactive';
   createdAt: string;
   updatedAt: string;
+  tenantId: string;
+  createdBy: string;
 }
 
 export interface AgentCreateRequest {
@@ -84,6 +86,7 @@ export interface Skill {
   currentVersion: number;
   hasDraft: boolean;
   draftS3Location?: string;
+  tenantId: string;
 }
 
 export interface SkillCreateRequest {
@@ -136,6 +139,8 @@ export interface MCPServer {
   version?: string;
   createdAt: string;
   updatedAt: string;
+  tenantId: string;
+  createdBy: string;
 }
 
 export interface MCPServerCreateRequest {
@@ -164,6 +169,8 @@ export interface Plugin {
   status: 'installed' | 'updating' | 'error';
   errorMessage?: string;
   marketplace?: string;  // Marketplace name if from a marketplace repo
+  tenantId: string;
+  createdBy: string;
 }
 
 export interface PluginInstallRequest {
@@ -341,6 +348,34 @@ export const ErrorCodes = {
 } as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];
+
+// Tenant Types
+export interface Tenant {
+  id: string;
+  name: string;
+  slug: string;
+  ownerUserId: string;
+  plan: string;
+  maxAgents: number;
+  maxSkills: number;
+  maxMcpServers: number;
+  rateLimitPerMinute: number;
+  status: string;
+  apiKeySet: boolean;
+  useBedrock: boolean;
+  anthropicBaseUrl?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TenantUser {
+  id: string;
+  email: string;
+  name?: string;
+  role: string;
+  createdAt: string;
+  lastLogin?: string;
+}
 
 // Loading State Types
 export type LoadingState = 'idle' | 'loading' | 'success' | 'error';

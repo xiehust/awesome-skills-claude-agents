@@ -1,6 +1,6 @@
 """Agent CRUD API endpoints."""
 import logging
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from schemas.agent import AgentCreateRequest, AgentUpdateRequest, AgentResponse
 from database import db
 from config import ANTHROPIC_TO_BEDROCK_MODEL_MAP
@@ -9,6 +9,7 @@ from core.exceptions import (
     ValidationException,
 )
 from core.workspace_manager import workspace_manager
+from middleware.tenant import TenantContext, get_tenant_context, require_role
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,7 @@ router = APIRouter()
 
 
 @router.get("/models", response_model=list[str])
-async def list_available_models():
+async def list_available_models(ctx: TenantContext = Depends(get_tenant_context)):
     """List all available Claude models.
 
     Returns the Anthropic model IDs that have Bedrock mappings configured.
@@ -25,15 +26,15 @@ async def list_available_models():
 
 
 @router.get("", response_model=list[AgentResponse])
-async def list_agents():
+async def list_agents(ctx: TenantContext = Depends(get_tenant_context)):
     """List all agents."""
-    agents = await db.agents.list()
+    agents = await db.agents.list_by_tenant(ctx.tenant_id)
     # Filter out the default agent from the list
     return [a for a in agents if a.get("id") != "default"]
 
 
 @router.get("/default", response_model=AgentResponse)
-async def get_default_agent():
+async def get_default_agent(ctx: TenantContext = Depends(get_tenant_context)):
     """Get the default system agent."""
     agent = await db.agents.get("default")
     if not agent:
@@ -45,9 +46,9 @@ async def get_default_agent():
 
 
 @router.get("/{agent_id}", response_model=AgentResponse)
-async def get_agent(agent_id: str):
+async def get_agent(agent_id: str, ctx: TenantContext = Depends(get_tenant_context)):
     """Get a specific agent by ID."""
-    agent = await db.agents.get(agent_id)
+    agent = await db.agents.get_with_tenant(agent_id, ctx.tenant_id)
     if not agent:
         raise AgentNotFoundException(
             detail=f"Agent with ID '{agent_id}' does not exist",
@@ -57,7 +58,7 @@ async def get_agent(agent_id: str):
 
 
 @router.post("", response_model=AgentResponse, status_code=201)
-async def create_agent(request: AgentCreateRequest):
+async def create_agent(request: AgentCreateRequest, ctx: TenantContext = Depends(get_tenant_context)):
     """Create a new agent."""
     agent_data = {
         "name": request.name,
@@ -77,6 +78,8 @@ async def create_agent(request: AgentCreateRequest):
         "enable_tool_logging": True,
         "enable_safety_checks": True,
         "status": "active",
+        "tenant_id": ctx.tenant_id,
+        "created_by": ctx.user_id,
     }
     agent = await db.agents.put(agent_data)
 
@@ -85,7 +88,8 @@ async def create_agent(request: AgentCreateRequest):
         await workspace_manager.rebuild_agent_workspace(
             agent_id=agent["id"],
             skill_ids=request.skill_ids,
-            allow_all_skills=request.allow_all_skills
+            allow_all_skills=request.allow_all_skills,
+            tenant_id=ctx.tenant_id,
         )
         logger.info(f"Created workspace for agent {agent['id']}")
     except Exception as e:
@@ -96,9 +100,9 @@ async def create_agent(request: AgentCreateRequest):
 
 
 @router.put("/{agent_id}", response_model=AgentResponse)
-async def update_agent(agent_id: str, request: AgentUpdateRequest):
+async def update_agent(agent_id: str, request: AgentUpdateRequest, ctx: TenantContext = Depends(get_tenant_context)):
     """Update an existing agent."""
-    existing = await db.agents.get(agent_id)
+    existing = await db.agents.get_with_tenant(agent_id, ctx.tenant_id)
     if not existing:
         raise AgentNotFoundException(
             detail=f"Agent with ID '{agent_id}' does not exist",
@@ -112,14 +116,15 @@ async def update_agent(agent_id: str, request: AgentUpdateRequest):
     skill_ids_changed = "skill_ids" in updates
     allow_all_changed = "allow_all_skills" in updates
 
-    if skill_ids_changed or allow_all_changed:
+    if agent and (skill_ids_changed or allow_all_changed):
         try:
             skill_ids = agent.get("skill_ids", [])
             allow_all_skills = agent.get("allow_all_skills", False)
             await workspace_manager.rebuild_agent_workspace(
                 agent_id=agent_id,
                 skill_ids=skill_ids,
-                allow_all_skills=allow_all_skills
+                allow_all_skills=allow_all_skills,
+                tenant_id=ctx.tenant_id,
             )
             logger.info(f"Rebuilt workspace for agent {agent_id} after skill config change")
         except Exception as e:
@@ -130,13 +135,21 @@ async def update_agent(agent_id: str, request: AgentUpdateRequest):
 
 
 @router.delete("/{agent_id}", status_code=204)
-async def delete_agent(agent_id: str):
+async def delete_agent(agent_id: str, ctx: TenantContext = Depends(get_tenant_context)):
     """Delete an agent."""
     if agent_id == "default":
         raise ValidationException(
             message="Cannot delete the default agent",
             detail="The default agent is a system resource and cannot be deleted",
             suggested_action="If you need to modify the default agent, use the update endpoint instead"
+        )
+
+    # Verify agent belongs to tenant before deleting
+    existing = await db.agents.get_with_tenant(agent_id, ctx.tenant_id)
+    if not existing:
+        raise AgentNotFoundException(
+            detail=f"Agent with ID '{agent_id}' does not exist",
+            suggested_action="Please check the agent ID and try again"
         )
 
     deleted = await db.agents.delete(agent_id)
@@ -148,7 +161,7 @@ async def delete_agent(agent_id: str):
 
     # Clean up agent workspace
     try:
-        await workspace_manager.delete_agent_workspace(agent_id)
+        await workspace_manager.delete_agent_workspace(agent_id, tenant_id=ctx.tenant_id)
         logger.info(f"Deleted workspace for agent {agent_id}")
     except Exception as e:
         logger.error(f"Failed to delete workspace for agent {agent_id}: {e}")

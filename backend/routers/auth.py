@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 from uuid import uuid4
 from fastapi import APIRouter, Depends
 
@@ -56,13 +55,19 @@ async def register(request: RegisterRequest):
 
     await db.users.put(user_data)
 
-    # Generate tokens
-    access_token, refresh_token, expires_in = create_token_pair(user_data["id"])
+    # Generate tokens (no tenant yet for new user)
+    tenant_id = user_data.get("tenant_id", "")
+    role = user_data.get("role", "member")
+    access_token, refresh_token, expires_in = create_token_pair(
+        user_data["id"], tenant_id=tenant_id, role=role
+    )
 
     return AuthResponse(
         access_token=access_token,
         refresh_token=refresh_token,
         expires_in=expires_in,
+        tenant_id=tenant_id or None,
+        role=role,
     )
 
 
@@ -93,13 +98,19 @@ async def login(request: LoginRequest):
     # Update last login
     await db.users.update(user["id"], {"last_login": datetime.now().isoformat()})
 
-    # Generate tokens
-    access_token, refresh_token, expires_in = create_token_pair(user["id"])
+    # Generate tokens with tenant info
+    tenant_id = user.get("tenant_id", "")
+    role = user.get("role", "member")
+    access_token, refresh_token, expires_in = create_token_pair(
+        user["id"], tenant_id=tenant_id, role=role
+    )
 
     return AuthResponse(
         access_token=access_token,
         refresh_token=refresh_token,
         expires_in=expires_in,
+        tenant_id=tenant_id or None,
+        role=role,
     )
 
 
@@ -107,12 +118,14 @@ async def login(request: LoginRequest):
 async def refresh_token(request: RefreshTokenRequest):
     """Refresh access token using refresh token."""
     # Verify refresh token
-    user_id = verify_token(request.refresh_token, token_type="refresh")
-    if not user_id:
+    token_data = verify_token(request.refresh_token, token_type="refresh")
+    if not token_data:
         raise TokenExpiredException(
             message="Refresh token expired or invalid",
             suggested_action="Please log in again",
         )
+
+    user_id = token_data["sub"]
 
     # Verify user still exists
     user = await db.users.get(user_id)
@@ -122,13 +135,19 @@ async def refresh_token(request: RefreshTokenRequest):
             suggested_action="Please log in again",
         )
 
-    # Generate new tokens
-    access_token, refresh_token, expires_in = create_token_pair(user_id)
+    # Generate new tokens with current tenant info
+    tenant_id = user.get("tenant_id", "")
+    role = user.get("role", "member")
+    access_token, refresh_token, expires_in = create_token_pair(
+        user_id, tenant_id=tenant_id, role=role
+    )
 
     return AuthResponse(
         access_token=access_token,
         refresh_token=refresh_token,
         expires_in=expires_in,
+        tenant_id=tenant_id or None,
+        role=role,
     )
 
 
@@ -154,6 +173,9 @@ async def get_current_user_info(current_user: dict = Depends(get_current_user)):
         name=current_user.get("name"),
         created_at=current_user.get("created_at", ""),
         last_login=current_user.get("last_login"),
+        tenant_id=current_user.get("tenant_id"),
+        role=current_user.get("role", "member"),
+        is_platform_admin=current_user.get("is_platform_admin", False),
     )
 
 
