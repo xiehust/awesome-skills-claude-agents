@@ -89,11 +89,11 @@ class Settings(BaseSettings):
     # This is where main skills are stored in .claude/skills/
     agent_workspace_dir: str = str(_PROJECT_ROOT / "workspace")
 
-    # Isolated per-agent workspaces directory (OUTSIDE project tree for skill isolation)
+    # Isolated per-agent workspaces directory (for skill isolation)
     # Each agent gets its own workspace with absolute symlinks to allowed skills
     # This prevents agents from discovering skills in parent directories
-    # Default: /tmp/agent-platform-workspaces (can be changed to persistent location)
-    agent_workspaces_dir: str = "/tmp/agent-platform-workspaces"
+    # Default: ./workspaces relative to project root (persistent across reboots)
+    agent_workspaces_dir: str = str(_PROJECT_ROOT / "workspaces")
 
     # Built-in Sandbox Configuration (Claude Agent SDK native bash sandboxing)
     sandbox_enabled_default: bool = True  # Default sandbox state for new agents (enabled for security)

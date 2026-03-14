@@ -3,21 +3,24 @@
 This module manages per-agent workspaces with symlinks to allowed skills,
 enabling fine-grained control over which skills each agent can access.
 
-IMPORTANT: Agent workspaces are created OUTSIDE the project tree to prevent
-Claude's Skill tool from discovering unauthorized skills in parent directories.
+Each agent gets an isolated workspace under <project_root>/workspaces/ by default.
+Only authorized skills are symlinked into each agent's workspace. Layers 2-4
+(skill access hooks, file tool access control, bash command protection) provide
+additional enforcement. For stricter isolation, override AGENT_WORKSPACES_DIR to
+a path outside the project tree.
 
 Directory structure:
-    /home/ubuntu/.../workspace/          <- Project workspace (main skill storage)
-    └── .claude/skills/                  <- All available skills
+    <project_root>/workspace/             <- Project workspace (main skill storage)
+    └── .claude/skills/                   <- All available skills
         ├── skill-1/
         ├── skill-2/
         └── skill-3/
 
-    /tmp/agent-platform-workspaces/      <- Isolated agent workspaces (outside project!)
+    <project_root>/workspaces/            <- Isolated agent workspaces (persistent)
     └── {agent_id}/
         └── .claude/skills/              <- Absolute symlinks to allowed skills only
-            ├── skill-1 -> /home/ubuntu/.../workspace/.claude/skills/skill-1
-            └── skill-2 -> /home/ubuntu/.../workspace/.claude/skills/skill-2
+            ├── skill-1 -> .../workspace/.claude/skills/skill-1
+            └── skill-2 -> .../workspace/.claude/skills/skill-2
 """
 import logging
 import shutil
@@ -128,7 +131,7 @@ class WorkspaceManager:
             logger.info(f"Agent {agent_id}: linking {len(skill_names)} skills: {skill_names}")
 
         # Create symlinks using ABSOLUTE paths
-        # This is critical for isolated workspaces outside the project tree
+        # This ensures symlinks work regardless of the workspace location
         linked_count = 0
         for skill_name in skill_names:
             source_path = self.main_skills_dir / skill_name

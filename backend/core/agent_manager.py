@@ -2,6 +2,7 @@
 from typing import AsyncIterator, Optional, Any
 from uuid import uuid4
 from datetime import datetime
+import asyncio
 import logging
 import os
 import json
@@ -263,6 +264,7 @@ class AgentManager:
 
     def __init__(self):
         self._clients: dict[str, ClaudeSDKClient] = {}
+        self._workspace_locks: dict[str, asyncio.Lock] = {}
 
     async def _build_options(
         self,
@@ -377,7 +379,18 @@ class AgentManager:
             # Use per-agent workspace with symlinked skills
             # When allow_all_skills=True, all skills will be symlinked
             # When allow_all_skills=False, only specified skills will be symlinked
-            working_directory = str(workspace_manager.get_agent_workspace(agent_id))
+            agent_workspace_path = workspace_manager.get_agent_workspace(agent_id)
+            # Check if workspace exists; rebuild if missing (e.g. after deletion or data loss)
+            lock = self._workspace_locks.setdefault(agent_id, asyncio.Lock())
+            async with lock:
+                if not agent_workspace_path.exists():
+                    logger.warning(f"Agent workspace missing, rebuilding: {agent_workspace_path}")
+                    await workspace_manager.rebuild_agent_workspace(
+                        agent_id=agent_id,
+                        skill_ids=skill_ids,
+                        allow_all_skills=allow_all_skills,
+                    )
+            working_directory = str(agent_workspace_path)
             logger.info(f"Using per-agent workspace: {working_directory} (allow_all_skills={allow_all_skills})")
         else:
             # Use default workspace (no skills or no agent_id)

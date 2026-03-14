@@ -21,6 +21,7 @@ wheels/
 *.egg
 MANIFEST
 /workspace/
+/workspaces/
 # Virtual environments
 .venv/
 venv/
