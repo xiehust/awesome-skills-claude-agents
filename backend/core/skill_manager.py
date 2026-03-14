@@ -668,7 +668,7 @@ class SkillManager:
             # Log but don't fail if S3 deletion fails
             logger.warning(f"Failed to delete {skill_name} from S3: {e}")
 
-    async def refresh(self, db_skills: list[dict]) -> tuple[SyncResult, list[dict]]:
+    async def refresh(self, db_skills: list[dict]) -> tuple[SyncResult, list[dict], list[dict]]:
         """
         Synchronize skills between local directory, S3 and database.
 
@@ -676,10 +676,11 @@ class SkillManager:
             db_skills: Current skills from database
 
         Returns:
-            Tuple of (SyncResult, list of skills to add to DB)
+            Tuple of (SyncResult, list of skills to add to DB, list of skills to update in DB)
         """
         result = SyncResult()
         skills_to_add = []
+        skills_to_update = []
 
         # Scan local and S3
         local_skills = self.scan_local_skills()
@@ -732,6 +733,8 @@ class SkillManager:
                             "description": metadata.description,
                             "version": metadata.version,
                             "s3_location": s3_location,
+                            "current_version": 1,
+                            "has_draft": False,
                             "is_system": False,
                             "created_by": "sync",
                         })
@@ -754,6 +757,8 @@ class SkillManager:
                             "description": metadata.description,
                             "version": metadata.version,
                             "s3_location": f"s3://{self.s3_bucket}/{self.s3_prefix}{skill_name}/",
+                            "current_version": 1,
+                            "has_draft": False,
                             "is_system": False,
                             "created_by": "sync",
                         })
@@ -772,12 +777,25 @@ class SkillManager:
                             "description": metadata.description,
                             "version": metadata.version,
                             "s3_location": f"s3://{self.s3_bucket}/{self.s3_prefix}{skill_name}/",
+                            "current_version": 1,
+                            "has_draft": False,
                             "is_system": False,
                             "created_by": "sync",
                         })
                         result.updated.append(skill_name)
                     else:
-                        logger.debug(f"Skill {skill_name}: already synced")
+                        # Fix existing records missing current_version
+                        existing = db_skill_map[skill_name]
+                        if not existing.get("current_version"):
+                            logger.info(f"Skill {skill_name}: fixing missing current_version")
+                            skills_to_update.append({
+                                "id": existing["id"],
+                                "current_version": 1,
+                                "has_draft": False,
+                            })
+                            result.updated.append(skill_name)
+                        else:
+                            logger.debug(f"Skill {skill_name}: already synced")
 
             except Exception as e:
                 logger.error(f"Error syncing skill {skill_name}: {e}")
@@ -789,7 +807,7 @@ class SkillManager:
                 logger.info(f"Skill {skill_name}: DB only (orphaned), marking for removal")
                 result.removed.append(skill_name)
 
-        return result, skills_to_add
+        return result, skills_to_add, skills_to_update
 
 
 # Global instance

@@ -60,6 +60,41 @@ class WorkspaceManager:
         """Get the skills directory path for a specific agent."""
         return self.get_agent_workspace(agent_id, tenant_id) / ".claude" / "skills"
 
+    def _resolve_skill_content_dir(self, skill_dir: Path) -> Path:
+        """Resolve the actual content directory for a skill.
+
+        Skills from S3 may have version subdirs (v1/, v2/, draft/).
+        Claude Code expects SKILL.md directly in the skill folder.
+        This method finds the best directory containing SKILL.md.
+
+        Priority: highest numbered v{N} > draft > skill_dir itself.
+        """
+        # If SKILL.md exists directly, use as-is
+        if (skill_dir / "SKILL.md").exists():
+            return skill_dir
+
+        # Look for versioned subdirectories (v1, v2, ... vN)
+        import re
+        versions = []
+        for child in skill_dir.iterdir():
+            if child.is_dir():
+                match = re.match(r'^v(\d+)$', child.name)
+                if match and (child / "SKILL.md").exists():
+                    versions.append((int(match.group(1)), child))
+
+        if versions:
+            # Return highest version
+            versions.sort(key=lambda x: x[0], reverse=True)
+            return versions[0][1]
+
+        # Fall back to draft/
+        draft_dir = skill_dir / "draft"
+        if draft_dir.exists() and (draft_dir / "SKILL.md").exists():
+            return draft_dir
+
+        # Last resort: return original dir
+        return skill_dir
+
     async def get_skill_name_by_id(self, skill_id: str) -> Optional[str]:
         """Get skill folder name from skill ID.
 
@@ -180,8 +215,11 @@ class WorkspaceManager:
             source_path = self.main_skills_dir / skill_name
             if source_path.exists():
                 target_path = agent_skills_dir / skill_name
-                # Use absolute path for symlink (required for isolated workspaces)
-                absolute_source = source_path.resolve()
+                # Resolve the actual content directory:
+                # Skills may have version subdirs (v1/, v2/, draft/) from S3 sync.
+                # Claude Code expects SKILL.md directly in the skill folder.
+                actual_source = self._resolve_skill_content_dir(source_path)
+                absolute_source = actual_source.resolve()
                 try:
                     target_path.symlink_to(absolute_source)
                     linked_count += 1

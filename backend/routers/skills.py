@@ -176,12 +176,20 @@ async def refresh_skills(ctx: TenantContext = Depends(get_tenant_context)):
         db_skills = tenant_skills + system_skills
 
         # Run synchronization
-        sync_result, skills_to_add = await skill_manager.refresh(db_skills)
+        sync_result, skills_to_add, skills_to_update = await skill_manager.refresh(db_skills)
 
-        # Add new skills to database
+        # Add new skills to database (with tenant context)
         for skill_data in skills_to_add:
+            skill_data["tenant_id"] = ctx.tenant_id
+            skill_data["created_by"] = ctx.user_id
             await db.skills.put(skill_data)
             logger.info(f"Added skill to DB: {skill_data['name']}")
+
+        # Update existing skills missing current_version
+        for update_data in skills_to_update:
+            skill_id = update_data.pop("id")
+            await db.skills.update(skill_id, update_data)
+            logger.info(f"Updated skill in DB: {skill_id}")
 
         # Convert to response format
         response = SyncResultResponse(

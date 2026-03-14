@@ -53,6 +53,23 @@ function clearTokens() {
   localStorage.removeItem(REFRESH_KEY);
 }
 
+/**
+ * Try to refresh access token. Returns new token or null on failure.
+ * Used by SSE fetch calls that bypass the Axios interceptor.
+ */
+export async function refreshAccessToken(): Promise<string | null> {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) return null;
+  try {
+    const { data } = await api.post('/auth/refresh', { refresh_token: refreshToken });
+    setTokens(data.access_token, data.refresh_token);
+    return data.access_token;
+  } catch {
+    clearTokens();
+    return null;
+  }
+}
+
 export const authService = {
   async login(request: LoginRequest): Promise<AuthResponse> {
     const { data } = await api.post('/auth/login', request);
