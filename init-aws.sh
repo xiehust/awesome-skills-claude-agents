@@ -93,6 +93,44 @@ enable_ttl_on_table() {
     fi
 }
 
+# Add GSI to a DynamoDB table if it doesn't already exist
+add_gsi_if_not_exists() {
+    local TABLE_NAME=$1
+    local INDEX_NAME=$2
+    local PARTITION_KEY=$3
+    local PARTITION_KEY_TYPE=${4:-S}
+    local REGION=${AWS_REGION:-us-west-2}
+
+    # Check if GSI already exists
+    local EXISTING_GSIS=$(aws dynamodb describe-table \
+        --table-name "$TABLE_NAME" \
+        --region "$REGION" \
+        --query "Table.GlobalSecondaryIndexes[?IndexName=='${INDEX_NAME}'].IndexName" \
+        --output text 2>/dev/null)
+
+    if [ "$EXISTING_GSIS" = "$INDEX_NAME" ]; then
+        echo "  ✅ GSI $INDEX_NAME already exists on $TABLE_NAME"
+        return 0
+    fi
+
+    echo "  📊 Adding GSI $INDEX_NAME to $TABLE_NAME..."
+    aws dynamodb update-table \
+        --table-name "$TABLE_NAME" \
+        --region "$REGION" \
+        --attribute-definitions AttributeName="$PARTITION_KEY",AttributeType="$PARTITION_KEY_TYPE" \
+        --global-secondary-index-updates \
+        "[{\"Create\":{\"IndexName\":\"${INDEX_NAME}\",\"KeySchema\":[{\"AttributeName\":\"${PARTITION_KEY}\",\"KeyType\":\"HASH\"}],\"Projection\":{\"ProjectionType\":\"ALL\"}}}]" \
+        > /dev/null 2>&1
+
+    if [ $? -eq 0 ]; then
+        echo "  ⏳ Waiting for GSI $INDEX_NAME to be active..."
+        aws dynamodb wait table-exists --table-name "$TABLE_NAME" --region "$REGION"
+        echo "  ✅ GSI $INDEX_NAME added to $TABLE_NAME"
+    else
+        echo "  ⚠️  Could not add GSI $INDEX_NAME to $TABLE_NAME (may already be updating)"
+    fi
+}
+
 # Update S3_BUCKET in .env with account ID
 update_s3_bucket_with_account_id() {
     local ENV_FILE="${SCRIPT_DIR}/backend/.env"
@@ -241,6 +279,27 @@ init_aws_resources() {
     if [ -n "$DYNAMODB_USERS_TABLE" ]; then
         create_dynamodb_table_if_not_exists "$DYNAMODB_USERS_TABLE"
     fi
+
+    # Tenants table
+    local TENANTS_TABLE=${DYNAMODB_TENANTS_TABLE:-awesome_skills_platform_tenants}
+    create_dynamodb_table_if_not_exists "$TENANTS_TABLE"
+
+    # Add tenant_id-index GSI to all resource tables
+    echo ""
+    echo "📊 Checking Global Secondary Indexes..."
+
+    add_gsi_if_not_exists "$DYNAMODB_AGENTS_TABLE" "tenant_id-index" "tenant_id"
+    add_gsi_if_not_exists "$DYNAMODB_SKILLS_TABLE" "tenant_id-index" "tenant_id"
+    add_gsi_if_not_exists "$DYNAMODB_MCP_TABLE" "tenant_id-index" "tenant_id"
+    add_gsi_if_not_exists "$DYNAMODB_SESSIONS_TABLE" "tenant_id-index" "tenant_id"
+    add_gsi_if_not_exists "$DYNAMODB_MESSAGES_TABLE" "tenant_id-index" "tenant_id"
+    add_gsi_if_not_exists "$DYNAMODB_PLUGINS_TABLE" "tenant_id-index" "tenant_id"
+    add_gsi_if_not_exists "${DYNAMODB_SETTINGS_TABLE:-awesome_skills_platform_settings}" "tenant_id-index" "tenant_id"
+    add_gsi_if_not_exists "${DYNAMODB_SKILL_VERSIONS_TABLE:-awesome_skills_platform_skill_versions}" "tenant_id-index" "tenant_id"
+    add_gsi_if_not_exists "${DYNAMODB_USERS_TABLE:-awesome_skills_platform_users}" "tenant_id-index" "tenant_id"
+
+    # Add slug-index GSI to tenants table
+    add_gsi_if_not_exists "$TENANTS_TABLE" "slug-index" "slug"
 
     # Create S3 bucket if it doesn't exist
     echo ""

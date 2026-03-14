@@ -89,6 +89,15 @@ class ForbiddenException(AppException):
     suggested_action = "Contact an administrator if you believe this is an error"
 
 
+class AuthorizationException(AppException):
+    """Raised when user lacks authorization (tenant/role checks)."""
+
+    code = "AUTHORIZATION_ERROR"
+    message = "You are not authorized to perform this action"
+    status_code = 403
+    suggested_action = "Contact your administrator for access"
+
+
 # Not Found Errors (404)
 class NotFoundException(AppException):
     """Base class for not found errors."""

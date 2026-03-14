@@ -1,4 +1,5 @@
 import api from './api';
+import { getAuthToken } from './auth';
 import type { Skill, SkillCreateRequest, SyncResult, StreamEvent, SkillVersionList } from '../types';
 
 // Request type for skill generation with agent
@@ -26,6 +27,7 @@ const toCamelCase = (data: Record<string, unknown>): Skill => {
     currentVersion: (data.current_version as number) ?? 0,
     hasDraft: (data.has_draft as boolean) ?? false,
     draftS3Location: data.draft_s3_location as string | undefined,
+    tenantId: (data.tenant_id as string) ?? '',
   };
 };
 
@@ -105,6 +107,7 @@ export const skillsService = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'Authorization': `Bearer ${getAuthToken() || ''}`,
       },
       body: JSON.stringify({
         skill_name: request.skillName,

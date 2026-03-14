@@ -16,6 +16,7 @@ class SessionInfo:
     agent_id: str
     title: str = "New Chat"
     user_id: Optional[str] = None
+    tenant_id: Optional[str] = None
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     last_accessed: str = field(default_factory=lambda: datetime.now().isoformat())
 
@@ -26,6 +27,7 @@ class SessionInfo:
             "agent_id": self.agent_id,
             "title": self.title,
             "user_id": self.user_id,
+            "tenant_id": self.tenant_id,
             "created_at": self.created_at,
             "last_accessed": self.last_accessed,
         }
@@ -38,6 +40,7 @@ class SessionInfo:
             agent_id=data.get("agent_id", ""),
             title=data.get("title", "New Chat"),
             user_id=data.get("user_id"),
+            tenant_id=data.get("tenant_id"),
             created_at=data.get("created_at", datetime.now().isoformat()),
             last_accessed=data.get("last_accessed", datetime.now().isoformat()),
         )
@@ -56,6 +59,7 @@ class SessionManager:
         agent_id: str,
         title: str = "New Chat",
         user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> SessionInfo:
         """Store session information in database."""
         now = datetime.now().isoformat()
@@ -77,6 +81,7 @@ class SessionManager:
                 "agent_id": agent_id,
                 "title": title,
                 "user_id": user_id,
+                "tenant_id": tenant_id,
                 "created_at": now,
                 "last_accessed": now,
             }

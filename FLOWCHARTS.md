@@ -7,41 +7,52 @@
 ```mermaid
 graph TB
     subgraph "Frontend (React + Vite)"
-        A[用户界面] --> B[React Components]
+        A[用户界面] --> AA[AuthContext 认证]
+        AA --> B[React Components]
         B --> C[TanStack Query]
-        C --> D[Axios API Client]
+        C --> D[Axios API Client + JWT]
         D --> E[SSE Stream Handler]
     end
 
     subgraph "Backend (FastAPI)"
-        F[API Routes] --> G[Agent Manager]
+        F[API Routes] --> FA[JWT 认证中间件]
+        FA --> FB[TenantContext RBAC]
+        FB --> G[Agent Manager]
         G --> H[Session Manager]
         G --> I[Claude SDK Client]
         I --> J[Claude Code CLI]
+        FB --> FC[Tenant Manager]
+        FC --> FD[Key Manager<br/>KMS/Fernet]
     end
 
     subgraph "Data Layer"
-        K[Mock Database]
+        K[DynamoDB]
         K --> L[(Agents)]
         K --> M[(Skills)]
         K --> N[(MCP Servers)]
+        K --> KT[(Tenants)]
+        K --> KU[(Users)]
     end
 
     subgraph "External Services"
         O[Anthropic API]
         P[MCP Servers]
-        Q[Skills Repository]
+        Q[S3 Skills Storage]
     end
 
-    E -->|HTTP/SSE| F
+    E -->|HTTP/SSE + JWT| F
     G --> K
+    FD --> O
     I --> O
     J --> P
     J --> Q
 
     style A fill:#2b6cee,color:#fff
+    style AA fill:#e67e22,color:#fff
+    style FA fill:#e67e22,color:#fff
     style J fill:#ff6b6b,color:#fff
     style O fill:#4ecdc4,color:#fff
+    style KT fill:#9b59b6,color:#fff
 ```
 
 ## 2. 聊天会话流程（核心流程）
@@ -506,6 +517,54 @@ graph TB
     style L fill:#4ecdc4,color:#fff
 ```
 
+## 11. 认证与多租户流程
+
+```mermaid
+sequenceDiagram
+    participant User as 用户
+    participant Frontend as React Frontend
+    participant Auth as 认证中间件
+    participant Tenant as 租户中间件
+    participant API as API 路由
+    participant DB as DynamoDB
+    participant KMS as Key Manager
+
+    User->>Frontend: 输入邮箱/密码
+    Frontend->>Auth: POST /api/auth/login
+    Auth->>DB: 查询用户记录
+    DB-->>Auth: 用户数据 (含 tenant_id, role)
+    Auth->>Auth: 验证密码
+    Auth-->>Frontend: JWT Token (sub, tid, role)
+    Frontend->>Frontend: 存储 Token 到 localStorage
+
+    Note over Frontend,API: 后续所有请求携带 JWT
+
+    User->>Frontend: 创建智能体
+    Frontend->>API: POST /api/agents<br/>Authorization: Bearer {token}
+    API->>Auth: 验证 JWT Token
+    Auth->>DB: 获取用户记录
+    Auth-->>API: 用户数据
+
+    API->>Tenant: get_tenant_context()
+    Tenant->>DB: 验证租户状态
+    Tenant-->>API: TenantContext<br/>(tenant_id, user_id, role)
+
+    API->>API: 权限检查 (RBAC)
+    API->>DB: 创建 Agent<br/>(tenant_id = ctx.tenant_id)
+    DB-->>API: Agent 记录
+    API-->>Frontend: Agent 响应
+
+    Note over User,KMS: 租户 API 密钥管理
+
+    User->>Frontend: 设置 API 密钥
+    Frontend->>API: PUT /api/tenants/current/api-key
+    API->>Tenant: require_role("owner", "admin")
+    API->>KMS: encrypt_api_key(plaintext)
+    KMS-->>API: 加密后的密钥
+    API->>DB: 存储加密密钥
+    API-->>Frontend: 成功
+```
+
 ---
 
 ## 图表说明
@@ -539,6 +598,9 @@ graph TB
 
 ### 图表 10: 生产部署架构
 展示了 AWS 生产环境的部署架构。
+
+### 图表 11: 认证与多租户流程
+展示了用户认证（JWT）、租户上下文验证（RBAC）和 API 密钥加密管理的完整流程。
 
 ---
 

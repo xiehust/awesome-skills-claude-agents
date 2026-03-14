@@ -1,5 +1,75 @@
 import type { ChatRequest, StreamEvent, ChatSession, ChatMessage } from '../types';
 import api from './api';
+import { getAuthToken, refreshAccessToken } from './auth';
+
+/** SSE fetch with automatic token refresh on 401. */
+async function sseFetchWithRefresh(
+  url: string,
+  body: Record<string, unknown>,
+  signal: AbortSignal,
+): Promise<Response> {
+  const doFetch = (token: string | null) =>
+    fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token || ''}`,
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+
+  let response = await doFetch(getAuthToken());
+
+  if (response.status === 401) {
+    const newToken = await refreshAccessToken();
+    if (newToken) {
+      response = await doFetch(newToken);
+    }
+  }
+
+  if (!response.ok) {
+    try {
+      const errorData = await response.json();
+      throw new Error(errorData.detail || errorData.message || `HTTP error! status: ${response.status}`);
+    } catch (e) {
+      if (e instanceof Error && e.message !== `HTTP error! status: ${response.status}`) throw e;
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+  }
+
+  return response;
+}
+
+/** Read SSE stream and dispatch events. */
+async function readSSEStream(
+  response: Response,
+  onMessage: (event: StreamEvent) => void,
+  onComplete: () => void,
+) {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('No response body');
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) { onComplete(); break; }
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        const data = line.slice(6);
+        if (data === '[DONE]') { onComplete(); return; }
+        try { onMessage(JSON.parse(data)); } catch { /* incomplete */ }
+      }
+    }
+  }
+}
 
 export const chatService = {
   // Stream chat messages using SSE
@@ -11,81 +81,23 @@ export const chatService = {
   ): () => void {
     const controller = new AbortController();
 
-    fetch('/api/chat/stream', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
+    sseFetchWithRefresh(
+      '/api/chat/stream',
+      {
         agent_id: request.agentId,
         message: request.message,
         session_id: request.sessionId,
         enable_skills: request.enableSkills,
         enable_mcp: request.enableMCP,
-      }),
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        if (!response.ok) {
-          // Try to parse error response from backend
-          try {
-            const errorData = await response.json();
-            const errorMessage = errorData.detail || errorData.message || `HTTP error! status: ${response.status}`;
-            throw new Error(errorMessage);
-          } catch {
-            throw new Error(`HTTP error! status: ${response.status}`);
-          }
-        }
-
-        const reader = response.body?.getReader();
-        if (!reader) {
-          throw new Error('No response body');
-        }
-
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-          const { done, value } = await reader.read();
-
-          if (done) {
-            onComplete();
-            break;
-          }
-
-          buffer += decoder.decode(value, { stream: true });
-
-          // Process SSE events
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6);
-              if (data === '[DONE]') {
-                onComplete();
-                return;
-              }
-              try {
-                const event: StreamEvent = JSON.parse(data);
-                onMessage(event);
-              } catch {
-                // Ignore parse errors for incomplete data
-              }
-            }
-          }
-        }
-      })
+      },
+      controller.signal,
+    )
+      .then((response) => readSSEStream(response, onMessage, onComplete))
       .catch((error) => {
-        if (error.name !== 'AbortError') {
-          onError(error);
-        }
+        if (error.name !== 'AbortError') onError(error);
       });
 
-    // Return cleanup function
-    return () => {
-      controller.abort();
-    };
+    return () => { controller.abort(); };
   },
 
   // List chat sessions
@@ -134,78 +146,23 @@ export const chatService = {
   ): () => void {
     const controller = new AbortController();
 
-    fetch('/api/chat/answer-question', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
+    sseFetchWithRefresh(
+      '/api/chat/answer-question',
+      {
         agent_id: request.agentId,
         session_id: request.sessionId,
         tool_use_id: request.toolUseId,
         answers: request.answers,
         enable_skills: request.enableSkills,
         enable_mcp: request.enableMCP,
-      }),
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        if (!response.ok) {
-          try {
-            const errorData = await response.json();
-            const errorMessage = errorData.detail || errorData.message || `HTTP error! status: ${response.status}`;
-            throw new Error(errorMessage);
-          } catch {
-            throw new Error(`HTTP error! status: ${response.status}`);
-          }
-        }
-
-        const reader = response.body?.getReader();
-        if (!reader) {
-          throw new Error('No response body');
-        }
-
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-          const { done, value } = await reader.read();
-
-          if (done) {
-            onComplete();
-            break;
-          }
-
-          buffer += decoder.decode(value, { stream: true });
-
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6);
-              if (data === '[DONE]') {
-                onComplete();
-                return;
-              }
-              try {
-                const event: StreamEvent = JSON.parse(data);
-                onMessage(event);
-              } catch {
-                // Ignore parse errors
-              }
-            }
-          }
-        }
-      })
+      },
+      controller.signal,
+    )
+      .then((response) => readSSEStream(response, onMessage, onComplete))
       .catch((error) => {
-        if (error.name !== 'AbortError') {
-          onError(error);
-        }
+        if (error.name !== 'AbortError') onError(error);
       });
 
-    return () => {
-      controller.abort();
-    };
+    return () => { controller.abort(); };
   },
 };

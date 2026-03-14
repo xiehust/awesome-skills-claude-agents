@@ -46,16 +46,16 @@ async def get_current_user(
 
     token = credentials.credentials
 
-    # Verify token and get user_id
-    user_id = verify_token(token, token_type="access")
-    if user_id is None:
+    # Verify token and get token data
+    token_data = verify_token(token, token_type="access")
+    if token_data is None:
         raise TokenExpiredException(
             message="Token expired or invalid",
             suggested_action="Please refresh your token or log in again",
         )
 
     # Get user from database
-    user = await db.users.get(user_id)
+    user = await db.users.get(token_data["sub"])
     if user is None:
         raise TokenInvalidException(
             message="User not found",
@@ -86,13 +86,13 @@ async def get_optional_user(
 
     token = credentials.credentials
 
-    # Verify token and get user_id
-    user_id = verify_token(token, token_type="access")
-    if user_id is None:
+    # Verify token and get token data
+    token_data = verify_token(token, token_type="access")
+    if token_data is None:
         return None
 
     # Get user from database
-    return await db.users.get(user_id)
+    return await db.users.get(token_data["sub"])
 
 
 def require_user_ownership(resource_user_id: Optional[str], current_user: dict) -> bool:

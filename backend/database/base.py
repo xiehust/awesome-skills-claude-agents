@@ -35,6 +35,16 @@ class BaseTable(ABC, Generic[T]):
         """Update an item."""
         pass
 
+    @abstractmethod
+    async def list_by_tenant(self, tenant_id: str) -> list[T]:
+        """List all items for a tenant."""
+        pass
+
+    @abstractmethod
+    async def get_with_tenant(self, item_id: str, tenant_id: str) -> Optional[T]:
+        """Get an item by ID, validating tenant ownership."""
+        pass
+
 
 class BaseDatabase(ABC):
     """Abstract base class for database clients."""
@@ -79,6 +89,24 @@ class BaseDatabase(ABC):
     @abstractmethod
     def plugins(self) -> BaseTable:
         """Get the plugins table."""
+        pass
+
+    @property
+    @abstractmethod
+    def tenants(self) -> BaseTable:
+        """Get the tenants table."""
+        pass
+
+    @property
+    @abstractmethod
+    def settings(self) -> BaseTable:
+        """Get the settings table."""
+        pass
+
+    @property
+    @abstractmethod
+    def skill_versions(self) -> BaseTable:
+        """Get the skill versions table."""
         pass
 
     @abstractmethod

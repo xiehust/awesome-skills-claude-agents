@@ -170,7 +170,7 @@ export class ApiError extends Error {
 api.interceptors.request.use(
   (config) => {
     // Add auth token if available
-    const token = localStorage.getItem('authToken');
+    const token = localStorage.getItem('auth_token');
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
@@ -181,22 +181,71 @@ api.interceptors.request.use(
   }
 );
 
-// Response interceptor with enhanced error handling
+// Track whether a token refresh is in progress to avoid concurrent refreshes
+let isRefreshing = false;
+let refreshSubscribers: Array<(token: string) => void> = [];
+
+function onTokenRefreshed(token: string) {
+  refreshSubscribers.forEach((cb) => cb(token));
+  refreshSubscribers = [];
+}
+
+function addRefreshSubscriber(cb: (token: string) => void) {
+  refreshSubscribers.push(cb);
+}
+
+// Response interceptor with enhanced error handling and token refresh
 api.interceptors.response.use(
   (response: AxiosResponse) => response,
-  (error: AxiosError) => {
-    const parsedError = parseApiError(error);
+  async (error: AxiosError) => {
+    const originalRequest = error.config;
     const statusCode = error.response?.status || 500;
 
-    // Handle authentication errors
-    if (parsedError.code === ErrorCodes.AUTH_TOKEN_EXPIRED ||
-        parsedError.code === ErrorCodes.AUTH_TOKEN_INVALID) {
-      localStorage.removeItem('authToken');
-      // Only redirect if not already on login page
-      if (!window.location.pathname.includes('/login')) {
-        window.location.href = '/login';
+    // Try token refresh on 401 (but not for auth endpoints themselves)
+    if (statusCode === 401 && originalRequest && !originalRequest.url?.includes('/auth/')) {
+      const refreshToken = localStorage.getItem('auth_refresh_token');
+
+      if (refreshToken) {
+        if (!isRefreshing) {
+          isRefreshing = true;
+          try {
+            const { data } = await api.post('/auth/refresh', { refresh_token: refreshToken });
+            localStorage.setItem('auth_token', data.access_token);
+            localStorage.setItem('auth_refresh_token', data.refresh_token);
+            isRefreshing = false;
+            onTokenRefreshed(data.access_token);
+
+            // Retry original request with new token
+            originalRequest.headers.Authorization = `Bearer ${data.access_token}`;
+            return api(originalRequest);
+          } catch {
+            isRefreshing = false;
+            refreshSubscribers = [];
+            localStorage.removeItem('auth_token');
+            localStorage.removeItem('auth_refresh_token');
+            if (!window.location.pathname.includes('/login')) {
+              window.location.href = '/login';
+            }
+          }
+        } else {
+          // Another refresh is in progress — queue this request
+          return new Promise((resolve) => {
+            addRefreshSubscriber((newToken: string) => {
+              originalRequest.headers.Authorization = `Bearer ${newToken}`;
+              resolve(api(originalRequest));
+            });
+          });
+        }
+      } else {
+        // No refresh token — redirect to login
+        localStorage.removeItem('auth_token');
+        if (!window.location.pathname.includes('/login')) {
+          window.location.href = '/login';
+        }
       }
     }
+
+    const parsedError = parseApiError(error);
 
     // Handle rate limiting with retry-after header
     if (parsedError.code === ErrorCodes.RATE_LIMIT_EXCEEDED) {

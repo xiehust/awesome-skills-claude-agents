@@ -2,7 +2,7 @@
 import logging
 import re
 from pathlib import Path
-from fastapi import APIRouter, UploadFile, File, Form, Request
+from fastapi import APIRouter, Depends, UploadFile, File, Form, Request
 from fastapi.responses import StreamingResponse
 from schemas.skill import (
     SkillCreateRequest,
@@ -24,6 +24,7 @@ from core.exceptions import (
     ValidationException,
 )
 from config import settings
+from middleware.tenant import TenantContext, get_tenant_context, require_role
 import asyncio
 import json
 
@@ -33,22 +34,29 @@ router = APIRouter()
 
 
 @router.get("", response_model=list[SkillResponse])
-async def list_skills():
-    """List all skills."""
-    return await db.skills.list()
+async def list_skills(ctx: TenantContext = Depends(get_tenant_context)):
+    """List all skills (tenant + system)."""
+    tenant_skills, system_skills = await asyncio.gather(
+        db.skills.list_by_tenant(ctx.tenant_id),
+        db.skills.list_by_tenant("__SYSTEM__"),
+    )
+    return tenant_skills + system_skills
 
 
 @router.get("/system", response_model=list[SkillResponse])
-async def list_system_skills():
+async def list_system_skills(ctx: TenantContext = Depends(get_tenant_context)):
     """List system-provided skills."""
-    skills = await db.skills.list()
+    skills = await db.skills.list_by_tenant("__SYSTEM__")
     return [s for s in skills if s.get("is_system", False)]
 
 
 @router.get("/{skill_id}", response_model=SkillResponse)
-async def get_skill(skill_id: str):
+async def get_skill(skill_id: str, ctx: TenantContext = Depends(get_tenant_context)):
     """Get a specific skill by ID."""
-    skill = await db.skills.get(skill_id)
+    # Try tenant-owned first, then fall back to system skill
+    skill = await db.skills.get_with_tenant(skill_id, ctx.tenant_id)
+    if not skill:
+        skill = await db.skills.get_with_tenant(skill_id, "__SYSTEM__")
     if not skill:
         raise SkillNotFoundException(
             detail=f"Skill with ID '{skill_id}' does not exist",
@@ -61,6 +69,7 @@ async def get_skill(skill_id: str):
 async def upload_skill(
     file: UploadFile = File(...),
     name: str = Form(None),
+    ctx: TenantContext = Depends(get_tenant_context),
 ):
     """Upload a skill package (ZIP file) as a draft.
 
@@ -96,7 +105,7 @@ async def upload_skill(
         )
 
         # Check if skill already exists (by looking for matching s3_location pattern)
-        existing_skills = await db.skills.list()
+        existing_skills = await db.skills.list_by_tenant(ctx.tenant_id)
         existing_skill = None
         for s in existing_skills:
             s3_loc = s.get("s3_location") or s.get("draft_s3_location") or ""
@@ -121,8 +130,9 @@ async def upload_skill(
                 "draft_s3_location": result["draft_s3_location"],
                 "has_draft": True,
                 "current_version": 0,  # Never published
-                "created_by": "user",
+                "created_by": ctx.user_id,
                 "is_system": False,
+                "tenant_id": ctx.tenant_id,
             }
             skill = await db.skills.put(skill_data)
             logger.info(f"Created new skill '{skill_name}' with draft: {result['draft_s3_location']}")
@@ -145,7 +155,7 @@ async def upload_skill(
 
 
 @router.post("/refresh", response_model=SyncResultResponse)
-async def refresh_skills():
+async def refresh_skills(ctx: TenantContext = Depends(get_tenant_context)):
     """Synchronize skills between local directory, S3 and database.
 
     This will:
@@ -158,16 +168,28 @@ async def refresh_skills():
        - DB only (orphaned) → Mark for removal
     """
     try:
-        # Get current DB skills
-        db_skills = await db.skills.list()
+        # Get current DB skills (tenant + system)
+        tenant_skills, system_skills = await asyncio.gather(
+            db.skills.list_by_tenant(ctx.tenant_id),
+            db.skills.list_by_tenant("__SYSTEM__"),
+        )
+        db_skills = tenant_skills + system_skills
 
         # Run synchronization
-        sync_result, skills_to_add = await skill_manager.refresh(db_skills)
+        sync_result, skills_to_add, skills_to_update = await skill_manager.refresh(db_skills)
 
-        # Add new skills to database
+        # Add new skills to database (with tenant context)
         for skill_data in skills_to_add:
+            skill_data["tenant_id"] = ctx.tenant_id
+            skill_data["created_by"] = ctx.user_id
             await db.skills.put(skill_data)
             logger.info(f"Added skill to DB: {skill_data['name']}")
+
+        # Update existing skills missing current_version
+        for update_data in skills_to_update:
+            skill_id = update_data.pop("id")
+            await db.skills.update(skill_id, update_data)
+            logger.info(f"Updated skill in DB: {skill_id}")
 
         # Convert to response format
         response = SyncResultResponse(
@@ -193,7 +215,7 @@ async def refresh_skills():
 
 
 @router.post("/generate", response_model=SkillResponse, status_code=201)
-async def generate_skill(request: SkillGenerateRequest):
+async def generate_skill(request: SkillGenerateRequest, ctx: TenantContext = Depends(get_tenant_context)):
     """Generate a skill using AI."""
     # Simulate AI generation delay
     await asyncio.sleep(1)
@@ -205,18 +227,19 @@ async def generate_skill(request: SkillGenerateRequest):
     skill_data = {
         "name": skill_name,
         "description": request.description,
-        "created_by": "ai-agent",
+        "created_by": ctx.user_id,
         "version": "1.0.0",
         "is_system": False,
+        "tenant_id": ctx.tenant_id,
     }
     skill = await db.skills.put(skill_data)
     return skill
 
 
 @router.delete("/{skill_id}", status_code=204)
-async def delete_skill(skill_id: str):
+async def delete_skill(skill_id: str, ctx: TenantContext = Depends(get_tenant_context)):
     """Delete a skill from database, local directory, S3 (all versions), and version records."""
-    skill = await db.skills.get(skill_id)
+    skill = await db.skills.get_with_tenant(skill_id, ctx.tenant_id)
     if not skill:
         raise SkillNotFoundException(
             detail=f"Skill with ID '{skill_id}' does not exist",
@@ -266,7 +289,7 @@ async def delete_skill(skill_id: str):
 
 
 @router.post("/generate-with-agent")
-async def generate_skill_with_agent(request: Request):
+async def generate_skill_with_agent(request: Request, ctx: TenantContext = Depends(get_tenant_context)):
     """Generate a skill using an AI agent with streaming response.
 
     This endpoint:
@@ -348,7 +371,7 @@ async def generate_skill_with_agent(request: Request):
 
 
 @router.post("/finalize", response_model=SkillResponse, status_code=201)
-async def finalize_skill(request: SkillFinalizeRequest):
+async def finalize_skill(request: SkillFinalizeRequest, ctx: TenantContext = Depends(get_tenant_context)):
     """Finalize skill creation by uploading to S3 draft and saving to database.
 
     This endpoint:
@@ -397,7 +420,7 @@ async def finalize_skill(request: SkillFinalizeRequest):
         draft_s3_location = await skill_manager.upload_to_draft(skill_name, skill_path)
 
         # Check if skill already exists (by looking for matching s3_location pattern)
-        existing_skills = await db.skills.list()
+        existing_skills = await db.skills.list_by_tenant(ctx.tenant_id)
         existing_skill = None
         for s in existing_skills:
             s3_loc = s.get("s3_location") or s.get("draft_s3_location") or ""
@@ -425,8 +448,9 @@ async def finalize_skill(request: SkillFinalizeRequest):
                 "draft_s3_location": draft_s3_location,
                 "has_draft": True,
                 "current_version": 0,  # Never published
-                "created_by": "ai-agent",
+                "created_by": ctx.user_id,
                 "is_system": False,
+                "tenant_id": ctx.tenant_id,
             }
             skill = await db.skills.put(skill_data)
             logger.info(f"Created new skill '{skill_name}' with draft: {draft_s3_location}")
@@ -457,12 +481,14 @@ def _get_skill_folder_name(skill: dict) -> str:
 
 
 @router.get("/{skill_id}/versions", response_model=SkillVersionListResponse)
-async def list_skill_versions(skill_id: str):
+async def list_skill_versions(skill_id: str, ctx: TenantContext = Depends(get_tenant_context)):
     """List all versions of a skill.
 
     Returns version history with current version and draft status.
     """
-    skill = await db.skills.get(skill_id)
+    skill = await db.skills.get_with_tenant(skill_id, ctx.tenant_id)
+    if not skill:
+        skill = await db.skills.get_with_tenant(skill_id, "__SYSTEM__")
     if not skill:
         raise SkillNotFoundException(
             detail=f"Skill with ID '{skill_id}' does not exist",
@@ -492,9 +518,11 @@ async def list_skill_versions(skill_id: str):
 
 
 @router.get("/{skill_id}/versions/{version}", response_model=SkillVersionResponse)
-async def get_skill_version(skill_id: str, version: int):
+async def get_skill_version(skill_id: str, version: int, ctx: TenantContext = Depends(get_tenant_context)):
     """Get details of a specific skill version."""
-    skill = await db.skills.get(skill_id)
+    skill = await db.skills.get_with_tenant(skill_id, ctx.tenant_id)
+    if not skill:
+        skill = await db.skills.get_with_tenant(skill_id, "__SYSTEM__")
     if not skill:
         raise SkillNotFoundException(
             detail=f"Skill with ID '{skill_id}' does not exist",
@@ -520,7 +548,7 @@ async def get_skill_version(skill_id: str, version: int):
 
 
 @router.post("/{skill_id}/publish", response_model=SkillResponse)
-async def publish_skill_draft(skill_id: str, request: PublishDraftRequest | None = None):
+async def publish_skill_draft(skill_id: str, request: PublishDraftRequest | None = None, ctx: TenantContext = Depends(get_tenant_context)):
     """Publish the draft as a new version.
 
     This will:
@@ -530,7 +558,7 @@ async def publish_skill_draft(skill_id: str, request: PublishDraftRequest | None
     4. Create version record in database
     5. Download new version to local workspace
     """
-    skill = await db.skills.get(skill_id)
+    skill = await db.skills.get_with_tenant(skill_id, ctx.tenant_id)
     if not skill:
         raise SkillNotFoundException(
             detail=f"Skill with ID '{skill_id}' does not exist",
@@ -586,14 +614,14 @@ async def publish_skill_draft(skill_id: str, request: PublishDraftRequest | None
 
 
 @router.delete("/{skill_id}/draft", status_code=204)
-async def discard_skill_draft(skill_id: str):
+async def discard_skill_draft(skill_id: str, ctx: TenantContext = Depends(get_tenant_context)):
     """Discard the unpublished draft.
 
     This will:
     1. Delete draft folder from S3
     2. Clear draft status in database
     """
-    skill = await db.skills.get(skill_id)
+    skill = await db.skills.get_with_tenant(skill_id, ctx.tenant_id)
     if not skill:
         raise SkillNotFoundException(
             detail=f"Skill with ID '{skill_id}' does not exist",
@@ -631,7 +659,7 @@ async def discard_skill_draft(skill_id: str):
 
 
 @router.post("/{skill_id}/rollback", response_model=SkillResponse)
-async def rollback_skill_version(skill_id: str, request: RollbackRequest):
+async def rollback_skill_version(skill_id: str, request: RollbackRequest, ctx: TenantContext = Depends(get_tenant_context)):
     """Rollback to a specific version.
 
     This will:
@@ -639,7 +667,7 @@ async def rollback_skill_version(skill_id: str, request: RollbackRequest):
     2. Download target version to local workspace
     3. Discard any existing draft
     """
-    skill = await db.skills.get(skill_id)
+    skill = await db.skills.get_with_tenant(skill_id, ctx.tenant_id)
     if not skill:
         raise SkillNotFoundException(
             detail=f"Skill with ID '{skill_id}' does not exist",

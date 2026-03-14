@@ -5,9 +5,10 @@ import mimetypes
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from config import settings
+from middleware.tenant import TenantContext, get_tenant_context
 from schemas.workspace import (
     WorkspaceFileInfo,
     WorkspaceFileResponse,
@@ -72,8 +73,10 @@ TEXT_EXTENSIONS = {
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".bmp"}
 
 
-def get_workspace_root(agent_id: str) -> Path:
+def get_workspace_root(agent_id: str, tenant_id: str = "") -> Path:
     """Get the workspace root directory for an agent."""
+    if tenant_id:
+        return Path(settings.agent_workspaces_dir) / tenant_id / agent_id
     return Path(settings.agent_workspaces_dir) / agent_id
 
 
@@ -150,7 +153,7 @@ def is_image_file(path: Path) -> bool:
 
 
 @router.post("/{agent_id}/list", response_model=WorkspaceListResponse)
-async def list_files(agent_id: str, request: WorkspaceListRequest):
+async def list_files(agent_id: str, request: WorkspaceListRequest, ctx: TenantContext = Depends(get_tenant_context)):
     """List files and directories in the specified path.
 
     Args:
@@ -160,7 +163,7 @@ async def list_files(agent_id: str, request: WorkspaceListRequest):
     Returns:
         WorkspaceListResponse with files and navigation info
     """
-    workspace_root = get_workspace_root(agent_id)
+    workspace_root = get_workspace_root(agent_id, ctx.tenant_id)
 
     # Check if workspace exists
     if not workspace_root.exists():
@@ -217,7 +220,7 @@ async def list_files(agent_id: str, request: WorkspaceListRequest):
 
 
 @router.get("/{agent_id}/read", response_model=WorkspaceFileResponse)
-async def read_file(agent_id: str, path: str = Query(..., description="Relative path to file")):
+async def read_file(agent_id: str, path: str = Query(..., description="Relative path to file"), ctx: TenantContext = Depends(get_tenant_context)):
     """Read the content of a file.
 
     Args:
@@ -227,7 +230,7 @@ async def read_file(agent_id: str, path: str = Query(..., description="Relative 
     Returns:
         WorkspaceFileResponse with file content and metadata
     """
-    workspace_root = get_workspace_root(agent_id)
+    workspace_root = get_workspace_root(agent_id, ctx.tenant_id)
 
     # Check if workspace exists
     if not workspace_root.exists():

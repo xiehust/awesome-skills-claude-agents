@@ -130,6 +130,67 @@ class DynamoDBTable(BaseTable[T], Generic[T]):
                 return None
             raise
 
+    async def list_by_tenant(self, tenant_id: str) -> list[T]:
+        """List all items for a tenant using tenant_id-index GSI."""
+        table = await self._get_table()
+        items = []
+        try:
+            response = await table.query(
+                IndexName="tenant_id-index",
+                KeyConditionExpression="tenant_id = :tid",
+                ExpressionAttributeValues={":tid": tenant_id}
+            )
+            items.extend(response.get("Items", []))
+            while "LastEvaluatedKey" in response:
+                response = await table.query(
+                    IndexName="tenant_id-index",
+                    KeyConditionExpression="tenant_id = :tid",
+                    ExpressionAttributeValues={":tid": tenant_id},
+                    ExclusiveStartKey=response["LastEvaluatedKey"]
+                )
+                items.extend(response.get("Items", []))
+        except ClientError:
+            # Fall back to scan with filter if GSI doesn't exist
+            response = await table.scan(
+                FilterExpression="tenant_id = :tid",
+                ExpressionAttributeValues={":tid": tenant_id}
+            )
+            items.extend(response.get("Items", []))
+            while "LastEvaluatedKey" in response:
+                response = await table.scan(
+                    FilterExpression="tenant_id = :tid",
+                    ExpressionAttributeValues={":tid": tenant_id},
+                    ExclusiveStartKey=response["LastEvaluatedKey"]
+                )
+                items.extend(response.get("Items", []))
+        return items
+
+    async def get_with_tenant(self, item_id: str, tenant_id: str) -> Optional[T]:
+        """Get an item by ID, validating tenant ownership.
+
+        Returns None (not 403) on mismatch to prevent existence leakage.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        item = await self.get(item_id)
+        if item is None:
+            return None
+
+        item_tenant_id = item.get("tenant_id")
+        # Allow access to system resources (tenant_id == "__SYSTEM__")
+        if item_tenant_id == "__SYSTEM__":
+            return item
+
+        if item_tenant_id != tenant_id:
+            logger.warning(
+                f"CROSS_TENANT_ACCESS_ATTEMPT: tenant={tenant_id} tried to access "
+                f"item={item_id} owned by tenant={item_tenant_id} in table={self.table_name}"
+            )
+            return None
+
+        return item
+
 
 class DynamoDBMessagesTable(DynamoDBTable[T], Generic[T]):
     """Specialized DynamoDB table for messages with session_id querying support and TTL."""
@@ -244,6 +305,30 @@ class DynamoDBSkillVersionsTable(DynamoDBTable[T], Generic[T]):
         return deleted_count
 
 
+class DynamoDBTenantsTable(DynamoDBTable[T], Generic[T]):
+    """Specialized DynamoDB table for tenants with slug lookup support."""
+
+    async def get_by_slug(self, slug: str) -> Optional[T]:
+        """Get a tenant by slug using slug-index GSI."""
+        table = await self._get_table()
+        try:
+            response = await table.query(
+                IndexName="slug-index",
+                KeyConditionExpression="slug = :s",
+                ExpressionAttributeValues={":s": slug}
+            )
+            items = response.get("Items", [])
+            return items[0] if items else None
+        except ClientError:
+            # Fall back to scan
+            response = await table.scan(
+                FilterExpression="slug = :s",
+                ExpressionAttributeValues={":s": slug}
+            )
+            items = response.get("Items", [])
+            return items[0] if items else None
+
+
 class DynamoDBDatabase(BaseDatabase):
     """DynamoDB database client implementing BaseDatabase interface."""
 
@@ -258,6 +343,7 @@ class DynamoDBDatabase(BaseDatabase):
         self._skill_versions = DynamoDBSkillVersionsTable[dict](settings.dynamodb_skill_versions_table, self._session)
         self._settings = DynamoDBTable[dict](settings.dynamodb_settings_table, self._session)
         self._plugins = DynamoDBTable[dict](settings.dynamodb_plugins_table, self._session)
+        self._tenants = DynamoDBTenantsTable[dict](settings.dynamodb_tenants_table, self._session)
 
     @property
     def agents(self) -> DynamoDBTable:
@@ -303,6 +389,11 @@ class DynamoDBDatabase(BaseDatabase):
     def plugins(self) -> DynamoDBTable:
         """Get the plugins table."""
         return self._plugins
+
+    @property
+    def tenants(self) -> DynamoDBTenantsTable:
+        """Get the tenants table."""
+        return self._tenants
 
     async def health_check(self) -> bool:
         """Check if the database is healthy."""

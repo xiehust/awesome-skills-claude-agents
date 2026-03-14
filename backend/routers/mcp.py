@@ -1,25 +1,34 @@
 """MCP Server CRUD API endpoints."""
-from fastapi import APIRouter
+import asyncio
+from fastapi import APIRouter, Depends
 from schemas.mcp import MCPCreateRequest, MCPUpdateRequest, MCPResponse
 from database import db
 from core.exceptions import (
     MCPServerNotFoundException,
     ValidationException,
 )
+from middleware.tenant import TenantContext, get_tenant_context, require_role
 
 router = APIRouter()
 
 
 @router.get("", response_model=list[MCPResponse])
-async def list_mcp_servers():
-    """List all MCP servers."""
-    return await db.mcp_servers.list()
+async def list_mcp_servers(ctx: TenantContext = Depends(get_tenant_context)):
+    """List all MCP servers (tenant + system)."""
+    tenant_servers, system_servers = await asyncio.gather(
+        db.mcp_servers.list_by_tenant(ctx.tenant_id),
+        db.mcp_servers.list_by_tenant("__SYSTEM__"),
+    )
+    return tenant_servers + system_servers
 
 
 @router.get("/{mcp_id}", response_model=MCPResponse)
-async def get_mcp_server(mcp_id: str):
+async def get_mcp_server(mcp_id: str, ctx: TenantContext = Depends(get_tenant_context)):
     """Get a specific MCP server by ID."""
-    server = await db.mcp_servers.get(mcp_id)
+    # Try tenant-owned first, then fall back to system
+    server = await db.mcp_servers.get_with_tenant(mcp_id, ctx.tenant_id)
+    if not server:
+        server = await db.mcp_servers.get_with_tenant(mcp_id, "__SYSTEM__")
     if not server:
         raise MCPServerNotFoundException(
             detail=f"MCP server with ID '{mcp_id}' does not exist",
@@ -29,7 +38,7 @@ async def get_mcp_server(mcp_id: str):
 
 
 @router.post("", response_model=MCPResponse, status_code=201)
-async def create_mcp_server(request: MCPCreateRequest):
+async def create_mcp_server(request: MCPCreateRequest, ctx: TenantContext = Depends(get_tenant_context)):
     """Create a new MCP server configuration."""
     # Validate config based on connection type
     if request.connection_type == "stdio":
@@ -66,15 +75,17 @@ async def create_mcp_server(request: MCPCreateRequest):
         "rejected_tools": request.rejected_tools,
         "endpoint": endpoint,
         "version": "v1.0.0",
+        "tenant_id": ctx.tenant_id,
+        "created_by": ctx.user_id,
     }
     server = await db.mcp_servers.put(server_data)
     return server
 
 
 @router.put("/{mcp_id}", response_model=MCPResponse)
-async def update_mcp_server(mcp_id: str, request: MCPUpdateRequest):
+async def update_mcp_server(mcp_id: str, request: MCPUpdateRequest, ctx: TenantContext = Depends(get_tenant_context)):
     """Update an existing MCP server configuration."""
-    existing = await db.mcp_servers.get(mcp_id)
+    existing = await db.mcp_servers.get_with_tenant(mcp_id, ctx.tenant_id)
     if not existing:
         raise MCPServerNotFoundException(
             detail=f"MCP server with ID '{mcp_id}' does not exist",
@@ -117,8 +128,15 @@ async def update_mcp_server(mcp_id: str, request: MCPUpdateRequest):
 
 
 @router.delete("/{mcp_id}", status_code=204)
-async def delete_mcp_server(mcp_id: str):
+async def delete_mcp_server(mcp_id: str, ctx: TenantContext = Depends(get_tenant_context)):
     """Delete an MCP server configuration."""
+    # Verify server belongs to tenant before deleting
+    existing = await db.mcp_servers.get_with_tenant(mcp_id, ctx.tenant_id)
+    if not existing:
+        raise MCPServerNotFoundException(
+            detail=f"MCP server with ID '{mcp_id}' does not exist",
+            suggested_action="Please check the MCP server ID and try again"
+        )
     deleted = await db.mcp_servers.delete(mcp_id)
     if not deleted:
         raise MCPServerNotFoundException(

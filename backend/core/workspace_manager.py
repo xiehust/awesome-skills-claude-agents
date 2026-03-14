@@ -46,13 +46,54 @@ class WorkspaceManager:
         self.main_skills_dir.mkdir(parents=True, exist_ok=True)
         self.agents_workspace.mkdir(parents=True, exist_ok=True)
 
-    def get_agent_workspace(self, agent_id: str) -> Path:
-        """Get the workspace path for a specific agent."""
+    def get_agent_workspace(self, agent_id: str, tenant_id: str = "") -> Path:
+        """Get the workspace path for a specific agent.
+
+        Path structure: {workspaces_dir}/{tenant_id}/{agent_id}/
+        If no tenant_id, falls back to flat structure for backwards compatibility.
+        """
+        if tenant_id:
+            return self.agents_workspace / tenant_id / agent_id
         return self.agents_workspace / agent_id
 
-    def get_agent_skills_dir(self, agent_id: str) -> Path:
+    def get_agent_skills_dir(self, agent_id: str, tenant_id: str = "") -> Path:
         """Get the skills directory path for a specific agent."""
-        return self.get_agent_workspace(agent_id) / ".claude" / "skills"
+        return self.get_agent_workspace(agent_id, tenant_id) / ".claude" / "skills"
+
+    def _resolve_skill_content_dir(self, skill_dir: Path) -> Path:
+        """Resolve the actual content directory for a skill.
+
+        Skills from S3 may have version subdirs (v1/, v2/, draft/).
+        Claude Code expects SKILL.md directly in the skill folder.
+        This method finds the best directory containing SKILL.md.
+
+        Priority: highest numbered v{N} > draft > skill_dir itself.
+        """
+        # If SKILL.md exists directly, use as-is
+        if (skill_dir / "SKILL.md").exists():
+            return skill_dir
+
+        # Look for versioned subdirectories (v1, v2, ... vN)
+        import re
+        versions = []
+        for child in skill_dir.iterdir():
+            if child.is_dir():
+                match = re.match(r'^v(\d+)$', child.name)
+                if match and (child / "SKILL.md").exists():
+                    versions.append((int(match.group(1)), child))
+
+        if versions:
+            # Return highest version
+            versions.sort(key=lambda x: x[0], reverse=True)
+            return versions[0][1]
+
+        # Fall back to draft/
+        draft_dir = skill_dir / "draft"
+        if draft_dir.exists() and (draft_dir / "SKILL.md").exists():
+            return draft_dir
+
+        # Last resort: return original dir
+        return skill_dir
 
     async def get_skill_name_by_id(self, skill_id: str) -> Optional[str]:
         """Get skill folder name from skill ID.
@@ -88,11 +129,48 @@ class WorkspaceManager:
                         skill_names.append(item.name)
         return skill_names
 
+    async def get_system_skill_names(self) -> list[str]:
+        """Get names of system skills (tenant_id == '__SYSTEM__')."""
+        system_skills = await db.skills.list_by_tenant("__SYSTEM__")
+        skill_names = []
+        for skill in system_skills:
+            s3_location = skill.get("s3_location") or skill.get("draft_s3_location", "")
+            if s3_location:
+                import re
+                match = re.search(r'/skills/([^/]+)/', s3_location)
+                if match:
+                    skill_names.append(match.group(1))
+                    continue
+            import re
+            name = re.sub(r'[^a-zA-Z0-9_-]', '-', skill.get("name", "").lower())
+            if name:
+                skill_names.append(name)
+        return skill_names
+
+    async def get_tenant_skill_names(self, tenant_id: str) -> list[str]:
+        """Get names of skills belonging to a tenant."""
+        tenant_skills = await db.skills.list_by_tenant(tenant_id)
+        skill_names = []
+        for skill in tenant_skills:
+            s3_location = skill.get("s3_location") or skill.get("draft_s3_location", "")
+            if s3_location:
+                import re
+                match = re.search(r'/skills/([^/]+)/', s3_location)
+                if match:
+                    skill_names.append(match.group(1))
+                    continue
+            import re
+            name = re.sub(r'[^a-zA-Z0-9_-]', '-', skill.get("name", "").lower())
+            if name:
+                skill_names.append(name)
+        return skill_names
+
     async def rebuild_agent_workspace(
         self,
         agent_id: str,
         skill_ids: list[str],
-        allow_all_skills: bool = False
+        allow_all_skills: bool = False,
+        tenant_id: str = "",
     ) -> Path:
         """Rebuild an agent's workspace with symlinks to allowed skills.
 
@@ -106,8 +184,8 @@ class WorkspaceManager:
         """
         self._ensure_dirs()
 
-        agent_workspace = self.get_agent_workspace(agent_id)
-        agent_skills_dir = self.get_agent_skills_dir(agent_id)
+        agent_workspace = self.get_agent_workspace(agent_id, tenant_id)
+        agent_skills_dir = self.get_agent_skills_dir(agent_id, tenant_id)
 
         # Remove existing skills directory and recreate
         if agent_skills_dir.exists():
@@ -137,8 +215,11 @@ class WorkspaceManager:
             source_path = self.main_skills_dir / skill_name
             if source_path.exists():
                 target_path = agent_skills_dir / skill_name
-                # Use absolute path for symlink (required for isolated workspaces)
-                absolute_source = source_path.resolve()
+                # Resolve the actual content directory:
+                # Skills may have version subdirs (v1/, v2/, draft/) from S3 sync.
+                # Claude Code expects SKILL.md directly in the skill folder.
+                actual_source = self._resolve_skill_content_dir(source_path)
+                absolute_source = actual_source.resolve()
                 try:
                     target_path.symlink_to(absolute_source)
                     linked_count += 1
@@ -151,9 +232,9 @@ class WorkspaceManager:
         logger.info(f"Agent {agent_id} workspace rebuilt: {linked_count} skills linked")
         return agent_workspace
 
-    async def delete_agent_workspace(self, agent_id: str):
+    async def delete_agent_workspace(self, agent_id: str, tenant_id: str = ""):
         """Delete an agent's workspace directory."""
-        agent_workspace = self.get_agent_workspace(agent_id)
+        agent_workspace = self.get_agent_workspace(agent_id, tenant_id)
         if agent_workspace.exists():
             shutil.rmtree(agent_workspace)
             logger.info(f"Deleted workspace for agent {agent_id}")
@@ -184,9 +265,9 @@ class WorkspaceManager:
                 skill_names.append(skill_name)
         return skill_names
 
-    def workspace_exists(self, agent_id: str) -> bool:
+    def workspace_exists(self, agent_id: str, tenant_id: str = "") -> bool:
         """Check if an agent's workspace exists."""
-        return self.get_agent_workspace(agent_id).exists()
+        return self.get_agent_workspace(agent_id, tenant_id).exists()
 
 
 # Global instance

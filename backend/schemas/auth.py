@@ -1,7 +1,6 @@
 """Authentication schemas for user registration and login."""
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 import re
@@ -13,6 +12,7 @@ class RegisterRequest(BaseModel):
     email: str = Field(..., description="User's email address")
     password: str = Field(..., min_length=8, description="Password (min 8 characters)")
     name: Optional[str] = Field(None, description="User's display name")
+    tenant_slug: Optional[str] = Field(None, description="Tenant slug to create or join")
 
     @field_validator("email")
     @classmethod
@@ -64,6 +64,8 @@ class AuthResponse(BaseModel):
     refresh_token: str = Field(..., description="JWT refresh token")
     token_type: str = Field(default="bearer", description="Token type")
     expires_in: int = Field(..., description="Access token expiration in seconds")
+    tenant_id: Optional[str] = Field(None, description="User's tenant ID")
+    role: str = Field(default="member", description="User's role in tenant")
 
 
 class UserResponse(BaseModel):
@@ -74,6 +76,9 @@ class UserResponse(BaseModel):
     name: Optional[str] = Field(None, description="User's display name")
     created_at: str = Field(..., description="Account creation timestamp")
     last_login: Optional[str] = Field(None, description="Last login timestamp")
+    tenant_id: Optional[str] = Field(None, description="User's tenant ID")
+    role: str = Field(default="member", description="User's role in tenant")
+    is_platform_admin: bool = Field(default=False, description="Whether user is a platform admin")
 
 
 class PasswordChangeRequest(BaseModel):
